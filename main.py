@@ -7,6 +7,7 @@ CodeAgent
 import os
 import json
 import re
+import sys
 import time
 import shutil
 import subprocess
@@ -42,8 +43,8 @@ class CodeAgentPlugin(Star):
     
     def _extract_requirement(self, text: str) -> Optional[str]:
         patterns = [
-            r'/agent\s+(.+)',
-            r'@.*?/agent\s+(.+)'
+            r'/agent\s+(\S[\s\S]*)',
+            r'@.*?/agent\s+(\S[\s\S]*)'
         ]
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
@@ -52,10 +53,20 @@ class CodeAgentPlugin(Star):
         return None
     
     def _is_exit_command(self, text: str) -> bool:
-        return bool(re.search(r'/exitconver', text, re.IGNORECASE))
+        return bool(re.search(r'(?:^|\s)/exitconver(?:\s|$)', text, re.IGNORECASE))
     
     def _sanitize_session_id(self, group_id: str, user_id: str) -> str:
-        return f"{group_id}_{user_id}".replace(':', '_').replace('/', '_')
+        def encode_component(value: str) -> str:
+            # Keep common ASCII ID characters readable; encode everything else
+            # with a fixed-width escape so separators and dot segments cannot
+            # become path syntax or collide with a literal escape sequence.
+            return "".join(
+                char if char.isascii() and (char.isalnum() or char == "-")
+                else f"%{ord(char):06x}"
+                for char in str(value)
+            )
+
+        return f"g{encode_component(group_id)}_u{encode_component(user_id)}"
     
     def _is_in_blacklist(self, user_id: str, group_id: str) -> bool:
         admin_blacklist = self._get_config("admin_blacklist", [])
@@ -67,8 +78,24 @@ class CodeAgentPlugin(Star):
         return False
     
     def _cleanup_session(self, session_id: str):
-        session_dir = self.workspace / session_id
-        if session_dir.exists():
+        if not isinstance(session_id, str) or not re.fullmatch(
+            r"g(?:[A-Za-z0-9-]|%[0-9a-f]{6})*_u(?:[A-Za-z0-9-]|%[0-9a-f]{6})*",
+            session_id,
+        ):
+            return
+
+        workspace_dir = self.workspace.resolve()
+        candidate = self.workspace / session_id
+        if candidate.is_symlink():
+            return
+
+        session_dir = candidate.resolve()
+        try:
+            session_dir.relative_to(workspace_dir)
+        except (OSError, ValueError):
+            return
+
+        if session_dir != workspace_dir and session_dir.is_dir():
             shutil.rmtree(session_dir, ignore_errors=True)
     
     def _ensure_nodejs(self):
@@ -250,13 +277,23 @@ class CodeAgentPlugin(Star):
     
     def _call_security_scan(self, code: str, language: str = 'python') -> Dict[str, Any]:
         security_script = self.scripts_dir / "codeagent_security.py"
+
+        def unavailable(message: str) -> Dict[str, Any]:
+            return {
+                'passed': False,
+                'risk_level': 'high',
+                'quality_score': 0,
+                'summary': f'Security scan unavailable: {message}',
+                'error': message,
+            }
+
         if not security_script.exists():
-            return {'passed': True, 'error': 'Security script not found'}
+            return unavailable('Security script not found')
         
         try:
             proc = subprocess.run(
                 [
-                    'python3', str(security_script),
+                    sys.executable, str(security_script),
                     '--code', json.dumps(code),
                     '--language', language
                 ],
@@ -264,9 +301,24 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=60
             )
-            return json.loads(proc.stdout)
-        except Exception:
-            return {'passed': True}
+            report = json.loads(proc.stdout)
+            if not isinstance(report, dict):
+                return unavailable('Security scanner returned a non-object result')
+            if report.get('risk_level') not in {'safe', 'low', 'medium', 'high', 'critical'}:
+                return unavailable('Security scanner returned an invalid risk level')
+            if proc.returncode not in (0, 1):
+                return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
+            if (
+                proc.returncode == 1
+                and report.get('passed', True)
+                and report.get('risk_level') not in {'high', 'critical'}
+            ):
+                return unavailable('Security scanner exited unsuccessfully with an inconsistent report')
+            return report
+        except subprocess.TimeoutExpired:
+            return unavailable('Security scanner timed out')
+        except Exception as exc:
+            return unavailable(str(exc))
     
     def _call_js_checker(self, code: str, language: str = 'javascript') -> Dict[str, Any]:
         """调用 JavaScript/TypeScript 检查器"""
@@ -337,32 +389,33 @@ class CodeAgentPlugin(Star):
             return {'success': False, 'error': str(e)}
     
     def _analyze_error(self, stderr: str) -> Dict[str, Any]:
-        lines = stderr.split('\n')
+        lines = stderr.splitlines()
         error_type = 'Unknown'
         error_line = 0
         error_message = stderr[:500]
-        
+
         for line in lines:
+            line_match = re.search(r'\bline\s+(\d+)\b', line, re.IGNORECASE)
+            if line_match:
+                error_line = int(line_match.group(1))
+
             if 'Error' in line or 'Exception' in line:
                 match = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*(?:Error|Exception))', line)
                 if match:
                     error_type = match.group(1)
-                line_match = re.search(r'line\s+(\d+)', line, re.IGNORECASE)
-                if line_match:
-                    error_line = int(line_match.group(1))
                 break
-        
+
         return {
             'error_type': error_type,
             'error_line': error_line,
             'error_message': error_message
         }
-    
+
     def _generate_debug_fix(self, error_info: Dict[str, Any]) -> str:
         error_type = error_info.get('error_type', '')
         error_message = error_info.get('error_message', '')
         
-        if 'Import' in error_type:
+        if 'Import' in error_type or 'ModuleNotFound' in error_type:
             missing = re.search(r"No module named '([^']+)'", error_message)
             if missing:
                 return f"在 requirements.txt 中添加 {missing.group(1)}"
@@ -428,7 +481,27 @@ class CodeAgentPlugin(Star):
         return {'type': project_type, 'size': size}
     
     def _create_process_json(self, session_id: str, requirement: str, project_type: str, project_size: str):
-        process_file = self.workspace / session_id / 'process.json'
+        if not isinstance(session_id, str) or not re.fullmatch(
+            r"g(?:[A-Za-z0-9-]|%[0-9a-f]{6})*_u(?:[A-Za-z0-9-]|%[0-9a-f]{6})*",
+            session_id,
+        ):
+            raise ValueError("session_id must be a safe workspace directory name")
+
+        workspace_dir = self.workspace.resolve()
+        candidate = self.workspace / session_id
+        if candidate.is_symlink():
+            raise ValueError("session_id cannot target a symbolic link")
+
+        session_dir = candidate.resolve()
+        try:
+            session_dir.relative_to(workspace_dir)
+        except (OSError, ValueError) as exc:
+            raise ValueError("session_id must remain inside the workspace") from exc
+
+        if session_dir == workspace_dir:
+            raise ValueError("session_id must identify a child directory")
+
+        process_file = session_dir / 'process.json'
         process_data = {
             'session_id': session_id,
             'requirement': requirement,
@@ -449,26 +522,38 @@ class CodeAgentPlugin(Star):
     def _save_snapshot(self, session_id: str, step: str, code: str, files: List[Dict]):
         snapshot_dir = self.workspace / session_id / 'snapshots'
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_file = snapshot_dir / f"{step}_{int(time.time())}.json"
+        snapshot_time_ns = time.time_ns()
         snapshot_data = {
             'step': step,
-            'timestamp': time.time(),
+            'timestamp': snapshot_time_ns / 1_000_000_000,
             'code': code,
             'files': files
         }
-        with open(snapshot_file, 'w', encoding='utf-8') as f:
-            json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
-        return str(snapshot_file)
-    
+
+        sequence = 0
+        while True:
+            collision_suffix = '' if sequence == 0 else f'_{sequence:012d}'
+            snapshot_file = snapshot_dir / f"{step}_{snapshot_time_ns}{collision_suffix}.json"
+            try:
+                with open(snapshot_file, 'x', encoding='utf-8') as f:
+                    json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
+                return str(snapshot_file)
+            except FileExistsError:
+                sequence += 1
+
     def _rollback_to_snapshot(self, session_id: str, step: str) -> Optional[Dict[str, Any]]:
         snapshot_dir = self.workspace / session_id / 'snapshots'
         if not snapshot_dir.exists():
             return None
-        
-        snapshot_files = sorted(snapshot_dir.glob(f"{step}_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+
+        snapshot_files = sorted(
+            snapshot_dir.glob(f"{step}_*.json"),
+            key=lambda snapshot_file: snapshot_file.name,
+            reverse=True
+        )
         if not snapshot_files:
             return None
-        
+
         try:
             with open(snapshot_files[0], 'r', encoding='utf-8') as f:
                 return json.load(f)
@@ -691,5 +776,7 @@ def test_main():
         self.logger.info("CodeAgent 插件已卸载")
 
 
-def get_star(context: Context):
-    return CodeAgentPlugin(context)
+def get_star(context: Context, config: Optional[AstrBotConfig] = None):
+    # AstrBot integrations that pass configuration keep their values; callers
+    # using the context-only factory still receive the schema defaults.
+    return CodeAgentPlugin(context, config if config is not None else {})

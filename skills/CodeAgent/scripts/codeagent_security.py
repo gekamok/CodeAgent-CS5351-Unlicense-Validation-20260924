@@ -60,6 +60,7 @@ class SecurityReport:
     quality_details: Dict[str, Any] = field(default_factory=dict)
     test_coverage: float = 0.0
     test_results: Dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
     
     def add_finding(self, finding: SecurityFinding):
         self.findings.append(finding)
@@ -78,7 +79,12 @@ class SecurityReport:
         self.quality_issues.append(issue)
     
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2, default=str)
+        return json.dumps(
+            asdict(self),
+            ensure_ascii=False,
+            indent=2,
+            default=lambda value: value.value if isinstance(value, Enum) else str(value),
+        )
 
 
 class RuffChecker:

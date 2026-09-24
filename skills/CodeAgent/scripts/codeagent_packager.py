@@ -13,6 +13,7 @@ import shutil
 import ast
 import subprocess
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Set
@@ -342,6 +343,23 @@ class ProjectPackager:
         
         for path in project_dir.rglob('coverage.json'):
             path.unlink()
+
+    @staticmethod
+    def _safe_relative_path(value: Any) -> Optional[str]:
+        """Normalize an archive input path and reject filesystem escapes."""
+        if not isinstance(value, str) or not value.strip() or '\x00' in value:
+            return None
+
+        # Treat both separator styles consistently so Windows paths cannot
+        # become traversal paths when the same input is packaged elsewhere.
+        normalized = value.replace('\\', '/')
+        if normalized.startswith('/') or ':' in normalized:
+            return None
+
+        parts = normalized.split('/')
+        if any(part in ('', '.', '..') for part in parts):
+            return None
+        return '/'.join(parts)
     
     def build_project_info(
         self,
@@ -430,6 +448,44 @@ class ProjectPackager:
         }
         
         try:
+            safe_project_name = self._safe_relative_path(name)
+            if safe_project_name is None or '/' in safe_project_name:
+                raise ValueError('Project name must be a single safe path component')
+            name = safe_project_name
+
+            safe_files = []
+            for item in files:
+                safe_name = self._safe_relative_path(item.get('name', 'file.txt'))
+                if safe_name is None:
+                    raise ValueError('Project file names must be safe relative paths')
+                safe_item = dict(item)
+                safe_item['name'] = safe_name
+                safe_files.append(safe_item)
+            files = safe_files
+
+            safe_test_files = []
+            for item in test_files or []:
+                safe_name = self._safe_relative_path(item.get('name', 'test_file.py'))
+                if safe_name is None:
+                    raise ValueError('Test file names must be safe relative paths')
+                safe_item = dict(item)
+                safe_item['name'] = safe_name
+                safe_test_files.append(safe_item)
+            test_files = safe_test_files
+
+            safe_extra_files = []
+            for item in extra_files or []:
+                extra_name = item.get('name', '')
+                if not extra_name:
+                    continue
+                safe_name = self._safe_relative_path(extra_name)
+                if safe_name is None:
+                    raise ValueError('Extra file names must be safe relative paths')
+                safe_item = dict(item)
+                safe_item['name'] = safe_name
+                safe_extra_files.append(safe_item)
+            extra_files = safe_extra_files
+
             project_files = []
             for item in files:
                 project_files.append(create_project_file(
@@ -456,8 +512,7 @@ class ProjectPackager:
                 project_type
             )
             
-            temp_dir = Path(f"/tmp/codeagent_pack_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(tempfile.mkdtemp(prefix="codeagent_pack_"))
             
             try:
                 project_dir = temp_dir / project.name
@@ -502,7 +557,9 @@ class ProjectPackager:
                         extra_name = extra.get('name', '')
                         content = extra.get('content', '')
                         if extra_name:
-                            (project_dir / extra_name).write_text(content, encoding='utf-8')
+                            extra_path = project_dir.joinpath(*extra_name.split('/'))
+                            extra_path.parent.mkdir(parents=True, exist_ok=True)
+                            extra_path.write_text(content, encoding='utf-8')
                 
                 self._cleanup_temp_files(project_dir)
                 

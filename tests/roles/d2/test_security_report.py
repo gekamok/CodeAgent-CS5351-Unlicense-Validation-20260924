@@ -16,6 +16,7 @@ sys.path.insert(0, str(SECURITY_SCRIPTS))
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from codeagent_security import (  # noqa: E402
+    CodeSecurityScanner,
     RiskLevel,
     SecurityFinding,
     SecurityReport,
@@ -53,6 +54,32 @@ class SecurityReportSerializationTests(unittest.TestCase):
 
         self.assertEqual(encoded["risk_level"], "safe")
         self.assertEqual(encoded["summary"], "scan complete")
+
+    def test_scanner_report_declares_schema_and_heuristic_limit(self):
+        scanner = CodeSecurityScanner()
+        scanner.ruff_checker.check = lambda *_args, **_kwargs: {"error": "not installed"}
+        scanner.mypy_checker.check = lambda *_args, **_kwargs: {"error": "not installed"}
+        scanner.bandit_checker.check = lambda *_args, **_kwargs: {"error": "not installed"}
+
+        encoded = json.loads(scanner.scan_python("print('ok')").to_json())
+
+        self.assertEqual(encoded["schema_version"], 1)
+        self.assertEqual(encoded["scanner_status"]["pattern_checker"], "available")
+        self.assertEqual(encoded["scanner_status"]["ruff"], "unavailable")
+        self.assertEqual(encoded["scanner_status"]["mypy"], "unavailable")
+        self.assertEqual(encoded["scanner_status"]["bandit"], "unavailable")
+        self.assertTrue(any("rule completeness" in note for note in encoded["limitations"]))
+        self.assertTrue(any("coverage is incomplete" in note for note in encoded["limitations"]))
+
+    def test_shell_report_discloses_missing_builtin_rules_and_shellcheck(self):
+        scanner = CodeSecurityScanner()
+        scanner.shellcheck_checker.check = lambda *_args, **_kwargs: {"error": "not installed"}
+
+        encoded = json.loads(scanner.scan_shell("#!/bin/sh\necho safe").to_json())
+
+        self.assertEqual(encoded["scanner_status"]["pattern_checker"], "unavailable")
+        self.assertEqual(encoded["scanner_status"]["shellcheck"], "unavailable")
+        self.assertTrue(any("No built-in Shell security checks" in note for note in encoded["limitations"]))
 
 
 class SecurityScanBoundaryTests(unittest.TestCase):
@@ -102,6 +129,15 @@ class SecurityScanBoundaryTests(unittest.TestCase):
             "summary": "scan complete",
         }
 
+    @classmethod
+    def _versioned_report(cls):
+        return {
+            **cls._valid_report(),
+            "schema_version": 1,
+            "scanner_status": {"pattern_checker": "available", "bandit": "unavailable"},
+            "limitations": ["Built-in checks are heuristic."],
+        }
+
     def test_wrapper_parses_a_real_high_risk_scanner_result(self):
         plugin = object.__new__(self.plugin_class)
         plugin.scripts_dir = SECURITY_SCRIPTS
@@ -128,6 +164,16 @@ class SecurityScanBoundaryTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertIn("Security scan unavailable", report["summary"])
 
+    def test_wrapper_fails_closed_on_duplicate_json_fields(self):
+        report = self._call_with_report(
+            '{"risk_level":"safe","risk_level":"critical",'
+            '"passed":true,"findings":[],"summary":"scan complete"}'
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["risk_level"], "high")
+        self.assertIn("Duplicate scanner JSON field", report["error"])
+
     def test_wrapper_fails_closed_on_invalid_report_schema(self):
         invalid_reports = [
             [],
@@ -135,6 +181,11 @@ class SecurityScanBoundaryTests(unittest.TestCase):
             {**self._valid_report(), "findings": {}},
             {**self._valid_report(), "findings": [{"level": "unknown", "message": "bad"}]},
             {**self._valid_report(), "summary": None},
+            {**self._versioned_report(), "schema_version": True},
+            {**self._versioned_report(), "schema_version": 2},
+            {**self._versioned_report(), "scanner_status": {"bandit": "missing"}},
+            {**self._versioned_report(), "scanner_status": {"bandit": []}},
+            {**self._versioned_report(), "limitations": [None]},
         ]
 
         for payload in invalid_reports:
@@ -147,6 +198,13 @@ class SecurityScanBoundaryTests(unittest.TestCase):
 
     def test_wrapper_accepts_a_well_formed_report(self):
         payload = self._valid_report()
+
+        report = self._call_with_report(json.dumps(payload))
+
+        self.assertEqual(report, payload)
+
+    def test_wrapper_accepts_versioned_scanner_metadata(self):
+        payload = self._versioned_report()
 
         report = self._call_with_report(json.dumps(payload))
 

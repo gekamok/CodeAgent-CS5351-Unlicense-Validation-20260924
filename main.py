@@ -325,6 +325,14 @@ class CodeAgentPlugin(Star):
 
         if not security_script.exists():
             return unavailable('Security script not found')
+
+        def reject_duplicate_json_fields(pairs):
+            parsed = {}
+            for key, value in pairs:
+                if key in parsed:
+                    raise ValueError(f'Duplicate scanner JSON field: {key}')
+                parsed[key] = value
+            return parsed
         
         try:
             proc = subprocess.run(
@@ -337,7 +345,7 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=60
             )
-            report = json.loads(proc.stdout)
+            report = json.loads(proc.stdout, object_pairs_hook=reject_duplicate_json_fields)
             if not isinstance(report, dict):
                 return unavailable('Security scanner returned a non-object result')
             risk_levels = {'safe', 'low', 'medium', 'high', 'critical'}
@@ -357,6 +365,22 @@ class CodeAgentPlugin(Star):
                 return unavailable('Security scanner returned an invalid finding')
             if not isinstance(report.get('summary'), str):
                 return unavailable('Security scanner returned an invalid summary')
+            if 'schema_version' in report:
+                if type(report['schema_version']) is not int or report['schema_version'] != 1:
+                    return unavailable('Security scanner returned an unsupported schema version')
+                scanner_status = report.get('scanner_status')
+                if (
+                    not isinstance(scanner_status, dict)
+                    or any(
+                        not isinstance(tool, str)
+                        or not isinstance(status, str)
+                        or status not in {'available', 'unavailable'}
+                        for tool, status in scanner_status.items()
+                    )
+                    or not isinstance(report.get('limitations'), list)
+                    or any(not isinstance(note, str) for note in report['limitations'])
+                ):
+                    return unavailable('Security scanner returned invalid scanner metadata')
             if proc.returncode not in (0, 1):
                 return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
             high_risk = report['risk_level'] in {'high', 'critical'}

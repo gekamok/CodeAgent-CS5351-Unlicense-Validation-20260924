@@ -5,6 +5,7 @@ stub so these tests exercise the real method bodies without installing or
 starting the bot framework.
 """
 import importlib.util
+import asyncio
 import json
 import sys
 import tempfile
@@ -55,6 +56,7 @@ class DebugAndSnapshotRegressionTests(unittest.TestCase):
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.plugin = _MAIN.CodeAgentPlugin.__new__(_MAIN.CodeAgentPlugin)
         self.plugin.workspace = Path(self._temporary_directory.name)
+        self.plugin.logger = types.SimpleNamespace(error=lambda *_: None)
 
     def tearDown(self):
         self._temporary_directory.cleanup()
@@ -82,6 +84,94 @@ class DebugAndSnapshotRegressionTests(unittest.TestCase):
                 })
 
                 self.assertIn("tomli", result)
+
+    def test_debug_loop_restores_checkpoint_before_retry(self):
+        class FakeEvent:
+            message_str = "/agent tiny request"
+
+            def get_sender_id(self):
+                return "user"
+
+            def get_group_id(self):
+                return "private"
+
+            def plain_result(self, message):
+                return message
+
+        self.plugin.config = {"max_debug_rounds": 2, "quality_threshold": 75}
+        self.plugin.active_sessions = {}
+        sandbox = patch.object(
+            self.plugin,
+            "_call_sandbox",
+            side_effect=[
+                {"success": False, "stderr": "ValueError: first attempt failed"},
+                {"success": True, "stdout": "ok"},
+            ],
+        )
+        recovery = self.plugin._rollback_to_snapshot
+
+        async def collect_messages():
+            return [message async for message in self.plugin.agent_command(FakeEvent())]
+
+        with (
+            patch.object(self.plugin, "_is_in_blacklist", return_value=False),
+            patch.object(self.plugin, "_is_exit_command", return_value=False),
+            patch.object(self.plugin, "_extract_requirement", return_value="tiny request"),
+            patch.object(self.plugin, "_sanitize_session_id", return_value="gprivate_uuser"),
+            patch.object(self.plugin, "_cleanup_session"),
+            patch.object(
+                self.plugin,
+                "_call_security_scan",
+                return_value={"risk_level": "low", "quality_score": 100},
+            ),
+            patch.object(self.plugin, "_call_packager", return_value={"success": True}),
+            sandbox as sandbox_call,
+            patch.object(self.plugin, "_rollback_to_snapshot", wraps=recovery) as rollback_call,
+        ):
+            messages = asyncio.run(collect_messages())
+
+        self.assertEqual(sandbox_call.call_count, 2)
+        self.assertIn("# Fixed:", sandbox_call.call_args_list[1].args[0])
+        rollback_call.assert_called_once_with("gprivate_uuser", "debug_recovery")
+        self.assertTrue(any("核心代码测试通过" in message for message in messages))
+
+    def test_debug_loop_stops_when_checkpoint_cannot_be_restored(self):
+        class FakeEvent:
+            message_str = "/agent tiny request"
+
+            def get_sender_id(self):
+                return "user"
+
+            def get_group_id(self):
+                return "private"
+
+            def plain_result(self, message):
+                return message
+
+        self.plugin.config = {"max_debug_rounds": 2, "quality_threshold": 75}
+        self.plugin.active_sessions = {}
+
+        async def collect_messages():
+            return [message async for message in self.plugin.agent_command(FakeEvent())]
+
+        with (
+            patch.object(self.plugin, "_is_in_blacklist", return_value=False),
+            patch.object(self.plugin, "_is_exit_command", return_value=False),
+            patch.object(self.plugin, "_extract_requirement", return_value="tiny request"),
+            patch.object(self.plugin, "_sanitize_session_id", return_value="gprivate_uuser"),
+            patch.object(self.plugin, "_cleanup_session"),
+            patch.object(self.plugin, "_rollback_to_snapshot", return_value=None) as rollback_call,
+            patch.object(
+                self.plugin,
+                "_call_sandbox",
+                return_value={"success": False, "stderr": "ValueError: retry failed"},
+            ) as sandbox_call,
+        ):
+            messages = asyncio.run(collect_messages())
+
+        self.assertEqual(sandbox_call.call_count, 1)
+        rollback_call.assert_called_once_with("gprivate_uuser", "debug_recovery")
+        self.assertTrue(any("无法恢复 Debug 检查点" in message for message in messages))
 
     def test_same_tick_snapshots_are_unique_and_latest_can_be_restored(self):
         tick = 1_750_000_000_123_456_789

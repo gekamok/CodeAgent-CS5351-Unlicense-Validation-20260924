@@ -813,6 +813,10 @@ if __name__ == "__main__":
             
             max_debug = self._get_config("max_debug_rounds", 10)
             quality_threshold = self._get_config("quality_threshold", 75)
+
+            # Keep a stable source checkpoint so retries can discard a failed
+            # intermediate rewrite before applying the next diagnostic fix.
+            self._save_snapshot(session_id, 'debug_recovery', code, [])
             
             for debug_round in range(max_debug):
                 sandbox_result = self._call_sandbox(code, session_id, language, filename)
@@ -826,6 +830,14 @@ if __name__ == "__main__":
                         return
                     
                     yield event.plain_result(f"Debug 循环 #{debug_round + 1}/{max_debug}\n错误类型: {error_info.get('error_type', 'Unknown')}\n修复方案: {fix}")
+                    recovery_snapshot = self._rollback_to_snapshot(
+                        session_id, 'debug_recovery'
+                    )
+                    if recovery_snapshot is None:
+                        yield event.plain_result("无法恢复 Debug 检查点，已停止重试")
+                        return
+
+                    code = recovery_snapshot['code']
                     code = code + f"\n# Fixed: {fix}\n"
                     continue
                 

@@ -12,10 +12,13 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DEFAULT_ANALYZER_TIMEOUT_MS = 15000;
 
 class JavaScriptChecker {
     constructor() {
         this.tempDir = null;
+        this.analyzerTimeoutMs = DEFAULT_ANALYZER_TIMEOUT_MS;
+        this._execSync = execSync;
         this.eslintAvailable = this._checkCommand('eslint');
         this.tscAvailable = this._checkCommand('tsc');
         this.results = {
@@ -106,10 +109,42 @@ class JavaScriptChecker {
     }
 
     _cleanup() {
-        if (this.tempDir && fs.existsSync(this.tempDir)) {
-            fs.rmSync(this.tempDir, { recursive: true, force: true });
-        }
+        const tempDir = this.tempDir;
         this.tempDir = null;
+
+        if (!tempDir) {
+            return null;
+        }
+
+        try {
+            if (fs.existsSync(tempDir)) {
+                this._removeTempDir(tempDir);
+            }
+            return null;
+        } catch (error) {
+            return error.message || String(error);
+        }
+    }
+
+    _removeTempDir(tempDir) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    _formatExecutionError(tool, error) {
+        if (error && (error.code === 'ETIMEDOUT' || error.killed)) {
+            return `${tool} 执行超时（${this.analyzerTimeoutMs} ms）`;
+        }
+
+        const status = error && error.status !== undefined
+            ? `（退出码 ${error.status}）`
+            : error && error.signal
+                ? `（信号 ${error.signal}）`
+                : error && error.code
+                    ? `（${error.code}）`
+                    : '';
+        const rawDetail = error && (error.stderr || error.message);
+        const detail = rawDetail ? rawDetail.toString().trim() : '无错误详情';
+        return `${tool} 执行失败${status}: ${detail}`;
     }
 
     _runESLint(filePath) {
@@ -121,9 +156,9 @@ class JavaScriptChecker {
         }
 
         try {
-            const output = execSync(
+            const output = this._execSync(
                 `eslint ${filePath} --format json --env es2020,node`,
-                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+                { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: this.analyzerTimeoutMs }
             );
             
             if (output.trim()) {
@@ -142,27 +177,38 @@ class JavaScriptChecker {
                 }
             }
         } catch (error) {
+            if (error.code === 'ETIMEDOUT' || error.killed || error.status !== 1) {
+                result.error = this._formatExecutionError('ESLint', error);
+                return result;
+            }
+
             try {
                 // ESLint 返回非0时，stdout 中仍有 JSON
-                if (error.stdout && error.stdout.trim()) {
-                    const data = JSON.parse(error.stdout);
-                    for (const file of data) {
-                        for (const msg of file.messages) {
-                            result.issues.push({
-                                line: msg.line || 0,
-                                column: msg.column || 0,
-                                severity: msg.severity === 2 ? 'error' : 'warning',
-                                message: msg.message,
-                                ruleId: msg.ruleId || 'unknown',
-                                suggestion: this._getEslintSuggestion(msg.ruleId)
-                            });
-                        }
+                const output = error.stdout ? error.stdout.toString() : '';
+                if (!output.trim()) {
+                    result.error = this._formatExecutionError('ESLint', error);
+                    return result;
+                }
+
+                const data = JSON.parse(output);
+                for (const file of data) {
+                    for (const msg of file.messages) {
+                        result.issues.push({
+                            line: msg.line || 0,
+                            column: msg.column || 0,
+                            severity: msg.severity === 2 ? 'error' : 'warning',
+                            message: msg.message,
+                            ruleId: msg.ruleId || 'unknown',
+                            suggestion: this._getEslintSuggestion(msg.ruleId)
+                        });
                     }
-                } else {
-                    result.error = error.stderr || 'ESLint 执行失败';
+                }
+
+                if (result.issues.length === 0) {
+                    result.error = this._formatExecutionError('ESLint', error);
                 }
             } catch (parseError) {
-                result.error = 'ESLint 输出解析失败';
+                result.error = `ESLint 输出解析失败: ${parseError.message}`;
             }
         }
         
@@ -203,11 +249,17 @@ class JavaScriptChecker {
         }
 
         try {
-            execSync(`tsc --noEmit --strict ${filePath}`, {
+            this._execSync(`tsc --noEmit --strict ${filePath}`, {
                 encoding: 'utf-8',
-                stdio: ['pipe', 'pipe', 'pipe']
+                stdio: ['pipe', 'pipe', 'pipe'],
+                timeout: this.analyzerTimeoutMs
             });
         } catch (error) {
+            if (error.code === 'ETIMEDOUT' || error.killed) {
+                result.error = this._formatExecutionError('TypeScript', error);
+                return result;
+            }
+
             const output = (error.stdout || '') + (error.stderr || '');
             const lines = output.split('\n');
             
@@ -227,6 +279,8 @@ class JavaScriptChecker {
             
             if (result.issues.length === 0 && output.trim()) {
                 result.error = output.trim();
+            } else if (result.issues.length === 0) {
+                result.error = this._formatExecutionError('TypeScript', error);
             }
         }
         
@@ -475,8 +529,19 @@ class JavaScriptChecker {
             if (incompleteTools.length) summaries.push(`检查未完成: ${incompleteTools.join(', ')}`);
             this.results.summary = summaries.length ? summaries.join('；') : '代码检查通过';
 
+        } catch (error) {
+            const message = this._formatExecutionError('检查器', error);
+            this.results.passed = false;
+            this.results.issues.push({ tool: 'checker', level: 'high', message });
+            this.results.summary = `检查未完成: ${message}`;
         } finally {
-            this._cleanup();
+            const cleanupError = this._cleanup();
+            if (cleanupError) {
+                const message = `临时目录清理失败: ${cleanupError}`;
+                this.results.passed = false;
+                this.results.issues.push({ tool: 'cleanup', level: 'high', message });
+                this.results.summary = [this.results.summary, message].filter(Boolean).join('；');
+            }
         }
 
         return this.results;

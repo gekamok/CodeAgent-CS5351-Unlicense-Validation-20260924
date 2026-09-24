@@ -70,3 +70,60 @@ test('does not report a pass when a requested analysis tool is unavailable', () 
     assert.match(result.summary, /ESLint/);
     assert.match(result.summary, /TypeScript/);
 });
+
+test('reports analyzer timeouts as incomplete and applies the timeout bound', () => {
+    const checker = new JavaScriptChecker();
+    checker.eslintAvailable = true;
+    checker.tscAvailable = true;
+    checker._runESLint = () => ({ available: true, issues: [], error: null });
+    checker.analyzerTimeoutMs = 25;
+    let observedOptions;
+    checker._execSync = (_command, options) => {
+        observedOptions = options;
+        const error = new Error('command timed out');
+        error.code = 'ETIMEDOUT';
+        error.killed = true;
+        throw error;
+    };
+
+    const result = checker.check('const value: string = "typed";', '', 'typescript');
+
+    assert.equal(observedOptions.timeout, 25);
+    assert.equal(result.passed, false);
+    assert.match(result.typescript.error, /超时/);
+    assert.equal(checker.tempDir, null);
+});
+
+test('fails closed when TypeScript exits without diagnostics', () => {
+    const checker = new JavaScriptChecker();
+    checker.eslintAvailable = true;
+    checker.tscAvailable = true;
+    checker._runESLint = () => ({ available: true, issues: [], error: null });
+    checker._execSync = () => {
+        const error = new Error('compiler exited without output');
+        error.status = 2;
+        error.stdout = '';
+        error.stderr = '';
+        throw error;
+    };
+
+    const result = checker.check('const value: string = "typed";', '', 'typescript');
+
+    assert.equal(result.passed, false);
+    assert.match(result.typescript.error, /退出码 2/);
+    assert.match(result.summary, /检查未完成/);
+});
+
+test('returns a structured checker failure and still clears its temp directory', () => {
+    const checker = checkerWithAvailableAnalyzers();
+    checker._runESLint = () => {
+        throw new Error('simulated analyzer crash');
+    };
+
+    const result = checker.check('const value = "safe";');
+
+    assert.equal(result.passed, false);
+    assert.equal(result.issues[0].tool, 'checker');
+    assert.match(result.issues[0].message, /simulated analyzer crash/);
+    assert.equal(checker.tempDir, null);
+});

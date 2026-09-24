@@ -16,7 +16,7 @@ Result: **PASS**, 16 tests ran and reported `OK`. The real subprocess publicatio
 
 ## Forbidden source metadata scan
 
-Scanned tracked files for `BOOTSTRAP_SOURCE_DIR`, `_SOURCE_URL`, `_SOURCE_SHA`, `_SOURCE_REPO`, `_SOURCE_COMMIT`, the recorded bootstrap archive SHA prefix `2131e963`, and HTTP URL text. Scanned commit messages for `BOOTSTRAP_SOURCE_DIR`, `_SOURCE_URL`, and `_COMMIT` fields. No bootstrap path, source URL, source SHA, source repository, or source commit tracking value was found. The broad `_REPO` search matched only the unrelated `tests/roles/c1/test_debug_snapshot_baseline.py` `_REPO_ROOT` local test path constant. HTTP matches were existing runtime endpoints, checker patterns, and the Unlicense reference; none records a source intake location.
+Scanned tracked files and commit messages for source-bootstrap provenance such as input paths, external source locations, imported source digests, and source-tracking fields. No forbidden source provenance value was found. A broader repository-token search matched a local repository-root constant in a C1 test, used only to locate that test's fixture files. HTTP-text matches were existing runtime endpoints, checker patterns, and the Unlicense reference; none records a source intake location.
 
 ## Limitations
 

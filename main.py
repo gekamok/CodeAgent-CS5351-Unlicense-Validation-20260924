@@ -595,12 +595,13 @@ class CodeAgentPlugin(Star):
             yield event.plain_result("当前已有 Agent 任务在执行，请等待完成或使用 /exitconver 退出。")
             return
         
-        self.active_sessions[session_id] = {
+        session_state = {
             'active': True,
             'requirement': requirement,
             'step': 0,
             'start_time': time.time()
         }
+        self.active_sessions[session_id] = session_state
         
         try:
             yield event.plain_result("正在分析需求...")
@@ -656,7 +657,6 @@ if __name__ == "__main__":
                     
                     if debug_round >= max_debug - 1:
                         yield event.plain_result(f"Debug 循环 #{debug_round + 1}/{max_debug} 失败\n错误: {error_info.get('error_message', '')[:200]}")
-                        self.active_sessions.pop(session_id, None)
                         return
                     
                     yield event.plain_result(f"Debug 循环 #{debug_round + 1}/{max_debug}\n错误类型: {error_info.get('error_type', 'Unknown')}\n修复方案: {fix}")
@@ -667,7 +667,6 @@ if __name__ == "__main__":
                 break
             else:
                 yield event.plain_result("Debug 循环结束但未成功。")
-                self.active_sessions.pop(session_id, None)
                 return
             
             # 安全检查
@@ -684,7 +683,6 @@ if __name__ == "__main__":
                     
                     if critical or high:
                         yield event.plain_result(f"安全检查未通过: {len(critical)} 个严重, {len(high)} 个高危问题")
-                        self.active_sessions.pop(session_id, None)
                         return
                     
                     quality_score = check_result.get('quality_score', 0)
@@ -700,7 +698,6 @@ if __name__ == "__main__":
                 
                 if security_report.get('risk_level') in ['critical', 'high']:
                     yield event.plain_result(f"安全拦截: {security_report.get('summary', 'Unknown')}")
-                    self.active_sessions.pop(session_id, None)
                     return
                 
                 quality_score = security_report.get('quality_score', 0)
@@ -761,12 +758,23 @@ def test_main():
             else:
                 yield event.plain_result(f"打包失败: {pack_result.get('error', 'Unknown')}\n\n代码:\n```\n{code}\n```")
             
-            self.active_sessions.pop(session_id, None)
-            
         except Exception as e:
             self.logger.error(f"CodeAgent error: {e}")
             yield event.plain_result(f"执行出错: {e}")
-            self.active_sessions.pop(session_id, None)
+        finally:
+            # Async response streams can be closed while suspended at a yield.
+            # Release only the record created by this invocation so a stale
+            # generator cannot remove a newer session for the same user.
+            current_session = self.active_sessions.get(session_id)
+            if current_session is session_state or current_session is None:
+                session_state['active'] = False
+                try:
+                    self._cleanup_session(session_id)
+                except Exception as cleanup_error:
+                    self.logger.error(f"CodeAgent cleanup error: {cleanup_error}")
+                finally:
+                    if self.active_sessions.get(session_id) is session_state:
+                        self.active_sessions.pop(session_id, None)
 
     async def terminate(self):
         for session_id in list(self.active_sessions.keys()):

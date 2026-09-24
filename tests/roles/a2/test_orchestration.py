@@ -141,7 +141,7 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.plugin.active_sessions, {})
 
     def test_duplicate_session_is_refused(self):
-        session_id = "group_user"
+        session_id = self.plugin._sanitize_session_id("group", "user")
         self.plugin.active_sessions[session_id] = {"active": True}
         replies = self.collect(
             self.plugin.agent_command(FakeEvent("/agent build a calculator"))
@@ -150,8 +150,28 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertIn("已有 Agent 任务", replies[0])
         self.assertEqual(self.plugin.active_sessions[session_id], {"active": True})
 
+    def test_closed_response_stream_releases_started_session(self):
+        async def exercise():
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            self.assertIn("需求分析完成", await anext(stream))
+            self.assertIn("开始编写核心代码", await anext(stream))
+
+            session_id = next(iter(self.plugin.active_sessions))
+            session_dir = self.plugin.workspace / session_id
+            self.assertTrue((session_dir / "process.json").is_file())
+
+            await stream.aclose()
+
+            self.assertEqual(self.plugin.active_sessions, {})
+            self.assertFalse(session_dir.exists())
+
+        asyncio.run(exercise())
+
     def test_exit_command_removes_active_session_and_workspace(self):
-        session_id = "group_user"
+        session_id = self.plugin._sanitize_session_id("group", "user")
         session_dir = self.plugin.workspace / session_id
         session_dir.mkdir()
         (session_dir / "temporary.txt").write_text("temporary", encoding="utf-8")
@@ -167,7 +187,10 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertFalse(session_dir.exists())
 
     def test_terminate_cleans_all_sessions(self):
-        session_ids = ("first", "second")
+        session_ids = (
+            self.plugin._sanitize_session_id("first", "user"),
+            self.plugin._sanitize_session_id("second", "user"),
+        )
         for session_id in session_ids:
             (self.plugin.workspace / session_id).mkdir()
             self.plugin.active_sessions[session_id] = {"active": True}

@@ -82,7 +82,24 @@ class SecurityScanBoundaryTests(unittest.TestCase):
             "astrbot.api.star": star,
         }
         with patch.dict(sys.modules, modules):
-            cls.plugin_class = importlib.import_module("main").CodeAgentPlugin
+            cls.main_module = importlib.import_module("main")
+            cls.plugin_class = cls.main_module.CodeAgentPlugin
+
+    def _call_with_report(self, report_json, returncode=0):
+        plugin = object.__new__(self.plugin_class)
+        plugin.scripts_dir = SECURITY_SCRIPTS
+        process = types.SimpleNamespace(returncode=returncode, stdout=report_json, stderr="")
+        with patch.object(self.main_module.subprocess, "run", return_value=process):
+            return plugin._call_security_scan("print('ok')", "python")
+
+    @staticmethod
+    def _valid_report():
+        return {
+            "risk_level": "safe",
+            "passed": True,
+            "findings": [],
+            "summary": "scan complete",
+        }
 
     def test_wrapper_parses_a_real_high_risk_scanner_result(self):
         plugin = object.__new__(self.plugin_class)
@@ -103,6 +120,36 @@ class SecurityScanBoundaryTests(unittest.TestCase):
         self.assertEqual(report["risk_level"], "high")
         self.assertFalse(report["passed"])
         self.assertIn("not found", report["error"])
+
+    def test_wrapper_fails_closed_on_invalid_json(self):
+        report = self._call_with_report("{not-json")
+
+        self.assertFalse(report["passed"])
+        self.assertIn("Security scan unavailable", report["summary"])
+
+    def test_wrapper_fails_closed_on_invalid_report_schema(self):
+        invalid_reports = [
+            [],
+            {**self._valid_report(), "passed": "true"},
+            {**self._valid_report(), "findings": {}},
+            {**self._valid_report(), "findings": [{"level": "unknown", "message": "bad"}]},
+            {**self._valid_report(), "summary": None},
+        ]
+
+        for payload in invalid_reports:
+            with self.subTest(payload=payload):
+                report = self._call_with_report(json.dumps(payload))
+
+                self.assertFalse(report["passed"])
+                self.assertEqual(report["risk_level"], "high")
+                self.assertIn("Security scan unavailable", report["summary"])
+
+    def test_wrapper_accepts_a_well_formed_report(self):
+        payload = self._valid_report()
+
+        report = self._call_with_report(json.dumps(payload))
+
+        self.assertEqual(report, payload)
 
 
 if __name__ == "__main__":

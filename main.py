@@ -292,7 +292,7 @@ class CodeAgentPlugin(Star):
         try:
             proc = subprocess.run(
                 [
-                    'python3', str(sandbox_script),
+                    sys.executable, str(sandbox_script),
                     '--code', json.dumps(code),
                     '--session-id', session_id,
                     '--language', language,
@@ -376,13 +376,15 @@ class CodeAgentPlugin(Star):
         """调用 JavaScript/TypeScript 检查器"""
         checker_script = self.scripts_dir / "codeagent_js_checker.js"
         if not checker_script.exists():
-            return {'passed': True, 'error': 'JS Checker script not found'}
+            return {'passed': False, 'error': 'JS Checker script not found'}
         
         # 检查 Node.js 是否可用
         try:
-            subprocess.run(['node', '-v'], capture_output=True, check=True)
-        except:
-            return {'passed': True, 'error': 'Node.js 不可用'}
+            subprocess.run(['node', '-v'], capture_output=True, text=True, check=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return {'passed': False, 'error': 'Node.js version check timed out'}
+        except Exception as e:
+            return {'passed': False, 'error': f'Node.js unavailable: {e}'}
         
         try:
             proc = subprocess.run(
@@ -395,16 +397,17 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=60
             )
-            if proc.returncode != 0:
-                try:
-                    return json.loads(proc.stdout)
-                except:
-                    return {'passed': False, 'error': proc.stderr or 'JS Checker failed'}
-            return json.loads(proc.stdout)
+            result = json.loads(proc.stdout)
+            if not isinstance(result, dict) or not isinstance(result.get('passed'), bool):
+                return {'passed': False, 'error': 'JS Checker returned an invalid result'}
+            if proc.returncode != 0 and result['passed']:
+                result['passed'] = False
+                result['error'] = result.get('error') or f'JS Checker exited with code {proc.returncode}'
+            return result
         except subprocess.TimeoutExpired:
-            return {'passed': True, 'error': 'JS Checker timeout'}
+            return {'passed': False, 'error': 'JS Checker timeout'}
         except Exception as e:
-            return {'passed': True, 'error': str(e)}
+            return {'passed': False, 'error': str(e)}
     
     def _call_packager(
         self, 

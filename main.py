@@ -42,15 +42,12 @@ class CodeAgentPlugin(Star):
         return self.config.get(key, default)
     
     def _extract_requirement(self, text: str) -> Optional[str]:
-        patterns = [
-            r'/agent\s+(\S[\s\S]*)',
-            r'@.*?/agent\s+(\S[\s\S]*)'
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        return None
+        # Accept a slash command at a token boundary or the platform's
+        # @mention/command form. Avoid extracting from URL/path fragments such
+        # as "prefix/agent" while still allowing the command after prose.
+        pattern = r'(?<!\S)(?:/agent|@[^\s/]+/agent)\s+(\S[\s\S]*)'
+        match = re.search(pattern, text, re.IGNORECASE)
+        return match.group(1).strip() if match else None
     
     def _is_exit_command(self, text: str) -> bool:
         return bool(re.search(r'(?:^|\s)/exitconver(?:\s|$)', text, re.IGNORECASE))
@@ -452,6 +449,7 @@ class CodeAgentPlugin(Star):
         return f"检查运行时错误: {error_type}"
     
     def _assess_project(self, requirement: str) -> Dict[str, str]:
+        requirement = requirement.strip()
         project_type = 'python'
         if '网页' in requirement or '网站' in requirement:
             project_type = 'web'

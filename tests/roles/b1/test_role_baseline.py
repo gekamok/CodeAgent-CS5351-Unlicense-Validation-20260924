@@ -92,6 +92,34 @@ class B1RequirementBaselineTests(unittest.TestCase):
         self.assertIsNone(plugin._extract_requirement("Please build a parser"))
         self.assertIsNone(plugin._extract_requirement("/agent   "))
 
+    def test_extract_requirement_ignores_command_like_path_fragments(self):
+        plugin = self.make_plugin()
+        self.assertIsNone(
+            plugin._extract_requirement("prefix/agent build a parser")
+        )
+        self.assertIsNone(
+            plugin._extract_requirement("mail@builder/agent build a parser")
+        )
+
+    def test_extract_requirement_handles_crlf_and_whitespace_before_command(self):
+        plugin = self.make_plugin()
+        self.assertEqual(
+            plugin._extract_requirement(
+                "notice\r\n/agent \r\n  add report\r\nwith tests\t "
+            ),
+            "add report\r\nwith tests",
+        )
+
+    def test_extract_requirement_accepts_hyphenated_mention_and_rejects_bad_tokens(self):
+        plugin = self.make_plugin()
+        self.assertEqual(
+            plugin._extract_requirement("@builder-bot/agent\tBuild\r\nit  "),
+            "Build\r\nit",
+        )
+        for message in ("/agentbot build", "@/agent build"):
+            with self.subTest(message=message):
+                self.assertIsNone(plugin._extract_requirement(message))
+
     def test_blacklist_checks_admin_and_group_ids_after_string_normalization(self):
         plugin = self.make_plugin(
             {"admin_blacklist": [42], "group_blacklist": ["blocked-room"]}
@@ -125,6 +153,29 @@ class B1RequirementBaselineTests(unittest.TestCase):
                 self.assertEqual(
                     plugin._assess_project("x" * length)["size"], expected
                 )
+
+    def test_project_assessment_ignores_outer_whitespace(self):
+        plugin = self.make_plugin()
+        padded_short_requirement = "\n  " + "x" * 29 + "\t\n"
+        self.assertEqual(plugin._assess_project(padded_short_requirement)["size"], "S")
+        self.assertEqual(
+            plugin._assess_project("\n  JavaScript parser \t")["type"], "js"
+        )
+
+    def test_project_size_boundaries_count_unicode_characters(self):
+        plugin = self.make_plugin()
+        for length, expected in ((29, "S"), (30, "M"), (99, "M"), (100, "L")):
+            with self.subTest(length=length):
+                self.assertEqual(
+                    plugin._assess_project("界" * length)["size"], expected
+                )
+
+    def test_project_type_keyword_after_line_break_is_still_classified(self):
+        plugin = self.make_plugin()
+        self.assertEqual(
+            plugin._assess_project("Please build a\nJavaScript parser")["type"],
+            "js",
+        )
 
 
 if __name__ == "__main__":

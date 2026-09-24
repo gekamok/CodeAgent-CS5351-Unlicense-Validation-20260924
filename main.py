@@ -305,7 +305,20 @@ class CodeAgentPlugin(Star):
             )
             if proc.returncode != 0:
                 return {'success': False, 'error': proc.stderr or 'Sandbox execution failed'}
-            return json.loads(proc.stdout)
+            result = json.loads(proc.stdout)
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get('success'), bool)
+                or not isinstance(result.get('stdout'), str)
+                or not isinstance(result.get('stderr'), str)
+                or not isinstance(result.get('exit_code'), int)
+                or isinstance(result.get('exit_code'), bool)
+                or (result.get('error') is not None and not isinstance(result.get('error'), str))
+            ):
+                return {'success': False, 'error': 'Sandbox returned an invalid result'}
+            if result['success'] and (result['exit_code'] != 0 or result.get('error') is not None):
+                return {'success': False, 'error': 'Sandbox returned an inconsistent result'}
+            return result
         except subprocess.TimeoutExpired:
             return {'success': False, 'error': 'Sandbox timeout'}
         except Exception as e:
@@ -398,11 +411,28 @@ class CodeAgentPlugin(Star):
                 timeout=60
             )
             result = json.loads(proc.stdout)
-            if not isinstance(result, dict) or not isinstance(result.get('passed'), bool):
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get('passed'), bool)
+                or not isinstance(result.get('issues'), list)
+                or not isinstance(result.get('summary'), str)
+            ):
                 return {'passed': False, 'error': 'JS Checker returned an invalid result'}
-            if proc.returncode != 0 and result['passed']:
-                result['passed'] = False
-                result['error'] = result.get('error') or f'JS Checker exited with code {proc.returncode}'
+            if any(
+                not isinstance(issue, dict)
+                or issue.get('level') not in {'critical', 'high', 'medium', 'low', 'info'}
+                for issue in result['issues']
+            ):
+                return {'passed': False, 'error': 'JS Checker returned an invalid issue'}
+            blocking_issue = any(issue['level'] in {'critical', 'high'} for issue in result['issues'])
+            expected_returncode = 1 if not result['passed'] or blocking_issue else 0
+            if proc.returncode != expected_returncode:
+                return {
+                    'passed': False,
+                    'error': f'JS Checker exit code {proc.returncode} contradicts its result',
+                    'issues': result['issues'],
+                    'summary': result['summary'],
+                }
             return result
         except subprocess.TimeoutExpired:
             return {'passed': False, 'error': 'JS Checker timeout'}

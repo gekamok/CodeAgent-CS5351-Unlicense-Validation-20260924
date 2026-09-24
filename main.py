@@ -543,22 +543,44 @@ class CodeAgentPlugin(Star):
 
     def _rollback_to_snapshot(self, session_id: str, step: str) -> Optional[Dict[str, Any]]:
         snapshot_dir = self.workspace / session_id / 'snapshots'
-        if not snapshot_dir.exists():
-            return None
-
-        snapshot_files = sorted(
-            snapshot_dir.glob(f"{step}_*.json"),
-            key=lambda snapshot_file: snapshot_file.name,
-            reverse=True
-        )
-        if not snapshot_files:
-            return None
-
         try:
-            with open(snapshot_files[0], 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
+            if not snapshot_dir.is_dir():
+                return None
+
+            snapshot_files = sorted(
+                snapshot_dir.glob(f"{step}_*.json"),
+                key=lambda snapshot_file: snapshot_file.name,
+                reverse=True
+            )
+        except OSError:
             return None
+
+        for snapshot_file in snapshot_files:
+            try:
+                with open(snapshot_file, 'r', encoding='utf-8') as f:
+                    snapshot_data = json.load(f)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+
+            if not isinstance(snapshot_data, dict):
+                continue
+            if snapshot_data.get('step') != step:
+                continue
+            if not isinstance(snapshot_data.get('timestamp'), (int, float)) or isinstance(
+                snapshot_data.get('timestamp'), bool
+            ):
+                continue
+            if not isinstance(snapshot_data.get('code'), str):
+                continue
+            snapshot_files_data = snapshot_data.get('files')
+            if not isinstance(snapshot_files_data, list) or not all(
+                isinstance(file_data, dict) for file_data in snapshot_files_data
+            ):
+                continue
+
+            return snapshot_data
+
+        return None
 
     @filter.command("agent")
     async def agent_command(self, event: AstrMessageEvent):

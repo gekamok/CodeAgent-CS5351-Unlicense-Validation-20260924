@@ -874,7 +874,9 @@ def test_main():
                             f"CodeAgent cleanup did not complete for {session_id}"
                         )
                 except Exception as cleanup_error:
-                    self.logger.error(f"CodeAgent cleanup error: {cleanup_error}")
+                    self.logger.error(
+                        f"CodeAgent cleanup error for {session_id}: {cleanup_error}"
+                    )
                 finally:
                     if self.active_sessions.get(session_id) is session_state:
                         self.active_sessions.pop(session_id, None)

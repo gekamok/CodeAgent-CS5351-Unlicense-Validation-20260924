@@ -226,6 +226,32 @@ class A2OrchestrationTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_response_stream_close_logs_cleanup_exception_with_session_id(self):
+        async def exercise():
+            errors = []
+            self.plugin.logger.error = lambda message: errors.append(message)
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            session_id = self.plugin._sanitize_session_id("group", "user")
+            session_state = self.plugin.active_sessions[session_id]
+
+            with patch.object(
+                self.plugin,
+                "_cleanup_session",
+                side_effect=OSError("cleanup denied"),
+            ):
+                await stream.aclose()
+
+            self.assertFalse(session_state["active"])
+            self.assertNotIn(session_id, self.plugin.active_sessions)
+            self.assertTrue(
+                any(session_id in message and "cleanup denied" in message for message in errors)
+            )
+
+        asyncio.run(exercise())
+
     def test_stale_stream_does_not_remove_replacement_session(self):
         async def exercise():
             stream = self.plugin.agent_command(
@@ -281,6 +307,41 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertNotIn(session_id, self.plugin.active_sessions)
         self.assertIn("清理未完成", replies[0])
         self.assertTrue(any(session_id in message for message in errors))
+
+    def test_exit_command_reports_cleanup_exception_truthfully(self):
+        session_id = self.plugin._sanitize_session_id("group", "user")
+        state = {"active": True}
+        self.plugin.active_sessions[session_id] = state
+        errors = []
+        self.plugin.logger.error = lambda message: errors.append(message)
+
+        with patch.object(
+            self.plugin,
+            "_cleanup_session",
+            side_effect=OSError("cleanup denied"),
+        ):
+            replies = self.collect(
+                self.plugin.agent_command(FakeEvent("/exitconver"))
+            )
+
+        self.assertFalse(state["active"])
+        self.assertNotIn(session_id, self.plugin.active_sessions)
+        self.assertIn("清理未完成", replies[0])
+        self.assertTrue(
+            any(session_id in message and "cleanup denied" in message for message in errors)
+        )
+
+    def test_exit_command_handles_non_dictionary_session_record(self):
+        session_id = self.plugin._sanitize_session_id("group", "user")
+        self.plugin.active_sessions[session_id] = object()
+
+        with patch.object(self.plugin, "_cleanup_session", return_value=True):
+            replies = self.collect(
+                self.plugin.agent_command(FakeEvent("/exitconver"))
+            )
+
+        self.assertIn("临时文件已清理", replies[0])
+        self.assertNotIn(session_id, self.plugin.active_sessions)
 
     def test_terminate_cleans_all_sessions(self):
         session_ids = (

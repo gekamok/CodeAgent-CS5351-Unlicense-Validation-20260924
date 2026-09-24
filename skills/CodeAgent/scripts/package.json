@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "install-deps": "npm i",
-    "test": "node codeagent_js_checker.js --test"
+    "test": "node --test ../../../tests/roles/d1/codeagent_js_checker.test.mjs",
+    "test:demo": "node codeagent_js_checker.js --test"
   },
   "dependencies": {},
   "devDependencies": {

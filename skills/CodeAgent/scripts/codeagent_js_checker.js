@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 
 class JavaScriptChecker {
     constructor() {
-        this.tempDir = path.join(os.tmpdir(), 'codeagent_js_check');
+        this.tempDir = null;
         this.eslintAvailable = this._checkCommand('eslint');
         this.tscAvailable = this._checkCommand('tsc');
         this.results = {
@@ -32,7 +32,8 @@ class JavaScriptChecker {
 
     _checkCommand(cmd) {
         try {
-            execSync(`which ${cmd}`, { stdio: 'ignore' });
+            const locator = process.platform === 'win32' ? 'where' : 'which';
+            execSync(`${locator} ${cmd}`, { stdio: 'ignore' });
             return true;
         } catch {
             return false;
@@ -62,9 +63,9 @@ class JavaScriptChecker {
     }
 
     _setupTempDir(code, language) {
-        if (!fs.existsSync(this.tempDir)) {
-            fs.mkdirSync(this.tempDir, { recursive: true });
-        }
+        // Each check owns a unique directory so concurrent checker processes
+        // cannot overwrite one another's input or remove one another's files.
+        this.tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codeagent_js_check-'));
         
         const ext = this._getFileExtension(language);
         const filePath = path.join(this.tempDir, `main${ext}`);
@@ -105,9 +106,10 @@ class JavaScriptChecker {
     }
 
     _cleanup() {
-        if (fs.existsSync(this.tempDir)) {
+        if (this.tempDir && fs.existsSync(this.tempDir)) {
             fs.rmSync(this.tempDir, { recursive: true, force: true });
         }
+        this.tempDir = null;
     }
 
     _runESLint(filePath) {
@@ -401,6 +403,9 @@ class JavaScriptChecker {
             // ESLint 检查
             const eslintResult = this._runESLint(tempFilePath);
             this.results.eslint = eslintResult;
+            if (!eslintResult.available || eslintResult.error) {
+                this.results.passed = false;
+            }
             for (const issue of eslintResult.issues) {
                 this.results.issues.push({
                     ...issue,
@@ -415,6 +420,9 @@ class JavaScriptChecker {
             // TypeScript 检查
             const tsResult = this._runTypeScript(tempFilePath, language);
             this.results.typescript = tsResult;
+            if (!tsResult.available || tsResult.error) {
+                this.results.passed = false;
+            }
             for (const issue of tsResult.issues) {
                 this.results.issues.push({
                     ...issue,
@@ -454,12 +462,18 @@ class JavaScriptChecker {
             const low = this.results.issues.filter(i => i.level === 'low').length;
 
             const parts = [];
+            const incompleteTools = [];
             if (critical) parts.push(`${critical} 个严重问题`);
             if (high) parts.push(`${high} 个高危问题`);
             if (medium) parts.push(`${medium} 个中危问题`);
             if (low) parts.push(`${low} 个低危问题`);
+            if (this.results.eslint.error) incompleteTools.push('ESLint');
+            if (this.results.typescript.error) incompleteTools.push('TypeScript');
 
-            this.results.summary = parts.length ? `发现 ${parts.join(', ')}` : '代码检查通过';
+            const summaries = [];
+            if (parts.length) summaries.push(`发现 ${parts.join(', ')}`);
+            if (incompleteTools.length) summaries.push(`检查未完成: ${incompleteTools.join(', ')}`);
+            this.results.summary = summaries.length ? summaries.join('；') : '代码检查通过';
 
         } finally {
             this._cleanup();
@@ -588,4 +602,10 @@ console.log(result);
     }
 }
 
-main();
+export { JavaScriptChecker };
+
+// Keep the checker usable as a library without executing the command-line UI
+// when another module imports it.
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
+    main();
+}

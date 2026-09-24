@@ -486,7 +486,7 @@ class CodeAgentPlugin(Star):
             return {'success': False, 'error': 'Packager script not found'}
         
         args = [
-            'python3', str(packager_script),
+            sys.executable, str(packager_script),
             '--name', name,
             '--description', description,
             '--files', json.dumps(files),
@@ -503,7 +503,90 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=120
             )
-            return json.loads(proc.stdout)
+            try:
+                result = json.loads(proc.stdout)
+            except (TypeError, ValueError):
+                detail = (proc.stderr or proc.stdout or '').strip()
+                suffix = f": {detail[:500]}" if detail else ''
+                return {
+                    'success': False,
+                    'zip_path': '',
+                    'file_count': 0,
+                    'size': 0,
+                    'error': f'Packager returned invalid JSON{suffix}'
+                }
+
+            if not isinstance(result, dict):
+                return {
+                    'success': False,
+                    'zip_path': '',
+                    'file_count': 0,
+                    'size': 0,
+                    'error': 'Packager returned a JSON value that is not an object'
+                }
+            if not isinstance(result.get('success'), bool):
+                return {
+                    'success': False,
+                    'zip_path': '',
+                    'file_count': 0,
+                    'size': 0,
+                    'error': 'Packager result is missing a boolean success field'
+                }
+
+            if proc.returncode != 0 and result['success']:
+                detail = (proc.stderr or '').strip()
+                suffix = f": {detail[:500]}" if detail else ''
+                return {
+                    'success': False,
+                    'zip_path': '',
+                    'file_count': 0,
+                    'size': 0,
+                    'error': f'Packager exited with code {proc.returncode}{suffix}'
+                }
+
+            if result['success']:
+                zip_path = result.get('zip_path')
+                file_count = result.get('file_count')
+                size = result.get('size')
+                if not isinstance(zip_path, str) or not zip_path.strip():
+                    return {
+                        'success': False,
+                        'zip_path': '',
+                        'file_count': 0,
+                        'size': 0,
+                        'error': 'Packager reported success without an archive path'
+                    }
+                if (not isinstance(file_count, int) or isinstance(file_count, bool)
+                        or file_count < 0 or not isinstance(size, int)
+                        or isinstance(size, bool) or size < 0):
+                    return {
+                        'success': False,
+                        'zip_path': '',
+                        'file_count': 0,
+                        'size': 0,
+                        'error': 'Packager returned invalid archive metadata'
+                    }
+                if not Path(zip_path).is_file():
+                    return {
+                        'success': False,
+                        'zip_path': '',
+                        'file_count': 0,
+                        'size': 0,
+                        'error': 'Packager reported success but the archive is missing'
+                    }
+            elif (not isinstance(result.get('error'), str)
+                    or not result['error'].strip()):
+                if proc.returncode != 0:
+                    detail = (proc.stderr or '').strip()
+                    suffix = f": {detail[:500]}" if detail else ''
+                    result['error'] = (
+                        f'Packager exited with code {proc.returncode} '
+                        f'without an error message{suffix}'
+                    )
+                else:
+                    result['error'] = 'Packager reported failure without an error message'
+
+            return result
         except Exception as e:
             return {'success': False, 'error': str(e)}
     

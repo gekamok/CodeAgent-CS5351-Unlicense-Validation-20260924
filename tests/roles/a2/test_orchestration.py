@@ -206,6 +206,52 @@ class A2OrchestrationTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_response_stream_close_logs_cleanup_failure(self):
+        async def exercise():
+            errors = []
+            self.plugin.logger.error = lambda message: errors.append(message)
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            session_id = self.plugin._sanitize_session_id("group", "user")
+            session_state = self.plugin.active_sessions[session_id]
+
+            with patch.object(self.plugin, "_cleanup_session", return_value=False):
+                await stream.aclose()
+
+            self.assertFalse(session_state["active"])
+            self.assertNotIn(session_id, self.plugin.active_sessions)
+            self.assertTrue(any(session_id in message for message in errors))
+
+        asyncio.run(exercise())
+
+    def test_response_stream_close_logs_cleanup_exception_with_session_id(self):
+        async def exercise():
+            errors = []
+            self.plugin.logger.error = lambda message: errors.append(message)
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            session_id = self.plugin._sanitize_session_id("group", "user")
+            session_state = self.plugin.active_sessions[session_id]
+
+            with patch.object(
+                self.plugin,
+                "_cleanup_session",
+                side_effect=OSError("cleanup denied"),
+            ):
+                await stream.aclose()
+
+            self.assertFalse(session_state["active"])
+            self.assertNotIn(session_id, self.plugin.active_sessions)
+            self.assertTrue(
+                any(session_id in message and "cleanup denied" in message for message in errors)
+            )
+
+        asyncio.run(exercise())
+
     def test_stale_stream_does_not_remove_replacement_session(self):
         async def exercise():
             stream = self.plugin.agent_command(
@@ -213,6 +259,10 @@ class A2OrchestrationTests(unittest.TestCase):
             )
             self.assertIn("正在分析需求", await anext(stream))
             session_id = self.plugin._sanitize_session_id("group", "user")
+            session_dir = self.plugin.workspace / session_id
+            session_dir.mkdir()
+            sentinel = session_dir / "keep.txt"
+            sentinel.write_text("replacement session", encoding="utf-8")
             original_state = self.plugin.active_sessions[session_id]
             replacement_state = {"active": True, "requirement": "new request"}
             self.plugin.active_sessions[session_id] = replacement_state
@@ -221,6 +271,7 @@ class A2OrchestrationTests(unittest.TestCase):
 
             self.assertFalse(original_state["active"])
             self.assertIs(self.plugin.active_sessions[session_id], replacement_state)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "replacement session")
 
         asyncio.run(exercise())
 
@@ -239,6 +290,58 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertIn("已终止 Agent 任务", replies[0])
         self.assertNotIn(session_id, self.plugin.active_sessions)
         self.assertFalse(session_dir.exists())
+
+    def test_exit_command_reports_cleanup_failure_truthfully(self):
+        session_id = self.plugin._sanitize_session_id("group", "user")
+        state = {"active": True}
+        self.plugin.active_sessions[session_id] = state
+        errors = []
+        self.plugin.logger.error = lambda message: errors.append(message)
+
+        with patch.object(self.plugin, "_cleanup_session", return_value=False):
+            replies = self.collect(
+                self.plugin.agent_command(FakeEvent("/exitconver"))
+            )
+
+        self.assertFalse(state["active"])
+        self.assertNotIn(session_id, self.plugin.active_sessions)
+        self.assertIn("清理未完成", replies[0])
+        self.assertTrue(any(session_id in message for message in errors))
+
+    def test_exit_command_reports_cleanup_exception_truthfully(self):
+        session_id = self.plugin._sanitize_session_id("group", "user")
+        state = {"active": True}
+        self.plugin.active_sessions[session_id] = state
+        errors = []
+        self.plugin.logger.error = lambda message: errors.append(message)
+
+        with patch.object(
+            self.plugin,
+            "_cleanup_session",
+            side_effect=OSError("cleanup denied"),
+        ):
+            replies = self.collect(
+                self.plugin.agent_command(FakeEvent("/exitconver"))
+            )
+
+        self.assertFalse(state["active"])
+        self.assertNotIn(session_id, self.plugin.active_sessions)
+        self.assertIn("清理未完成", replies[0])
+        self.assertTrue(
+            any(session_id in message and "cleanup denied" in message for message in errors)
+        )
+
+    def test_exit_command_handles_non_dictionary_session_record(self):
+        session_id = self.plugin._sanitize_session_id("group", "user")
+        self.plugin.active_sessions[session_id] = object()
+
+        with patch.object(self.plugin, "_cleanup_session", return_value=True):
+            replies = self.collect(
+                self.plugin.agent_command(FakeEvent("/exitconver"))
+            )
+
+        self.assertIn("临时文件已清理", replies[0])
+        self.assertNotIn(session_id, self.plugin.active_sessions)
 
     def test_terminate_cleans_all_sessions(self):
         session_ids = (
@@ -284,6 +387,36 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.plugin.active_sessions, {})
         self.assertTrue((self.plugin.workspace / session_ids[0]).exists())
         self.assertFalse((self.plugin.workspace / session_ids[1]).exists())
+
+    def test_terminate_logs_false_cleanup_result_and_continues(self):
+        session_ids = (
+            self.plugin._sanitize_session_id("first", "user"),
+            self.plugin._sanitize_session_id("second", "user"),
+        )
+        for session_id in session_ids:
+            (self.plugin.workspace / session_id).mkdir()
+            self.plugin.active_sessions[session_id] = {"active": True}
+        session_states = list(self.plugin.active_sessions.values())
+
+        errors = []
+        self.plugin.logger.error = lambda message: errors.append(message)
+        attempted = []
+
+        def fail_first_cleanup(session_id):
+            attempted.append(session_id)
+            if session_id == session_ids[0]:
+                return False
+            return True
+
+        with patch.object(
+            self.plugin, "_cleanup_session", side_effect=fail_first_cleanup
+        ):
+            asyncio.run(self.plugin.terminate())
+
+        self.assertEqual(attempted, list(session_ids))
+        self.assertTrue(all(not state["active"] for state in session_states))
+        self.assertEqual(self.plugin.active_sessions, {})
+        self.assertTrue(any(session_ids[0] in message for message in errors))
 
 
 if __name__ == "__main__":

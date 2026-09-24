@@ -719,10 +719,32 @@ class CodeAgentPlugin(Star):
         if self._is_exit_command(message_str):
             session_id = self._sanitize_session_id(group_id, user_id)
             if session_id in self.active_sessions:
-                self.active_sessions[session_id]['active'] = False
-                self._cleanup_session(session_id)
-                del self.active_sessions[session_id]
-                yield event.plain_result("已终止 Agent 任务，临时文件已清理。")
+                session_state = self.active_sessions[session_id]
+                if isinstance(session_state, dict):
+                    session_state['active'] = False
+
+                cleanup_succeeded = False
+                try:
+                    cleanup_succeeded = self._cleanup_session(session_id) is True
+                    if not cleanup_succeeded:
+                        self.logger.error(
+                            f"CodeAgent exit cleanup did not complete for {session_id}"
+                        )
+                except Exception as cleanup_error:
+                    self.logger.error(
+                        f"CodeAgent exit cleanup error for {session_id}: {cleanup_error}"
+                    )
+
+                # Keep a replacement record if one was installed during cleanup.
+                if self.active_sessions.get(session_id) is session_state:
+                    self.active_sessions.pop(session_id, None)
+
+                if cleanup_succeeded:
+                    yield event.plain_result("已终止 Agent 任务，临时文件已清理。")
+                else:
+                    yield event.plain_result(
+                        "已终止 Agent 任务，但临时文件清理未完成，请检查服务日志。"
+                    )
             else:
                 yield event.plain_result("当前没有正在执行的 Agent 任务。")
             return
@@ -913,9 +935,14 @@ def test_main():
             current_session = self.active_sessions.get(session_id)
             if current_session is session_state or current_session is None:
                 try:
-                    self._cleanup_session(session_id)
+                    if self._cleanup_session(session_id) is not True:
+                        self.logger.error(
+                            f"CodeAgent cleanup did not complete for {session_id}"
+                        )
                 except Exception as cleanup_error:
-                    self.logger.error(f"CodeAgent cleanup error: {cleanup_error}")
+                    self.logger.error(
+                        f"CodeAgent cleanup error for {session_id}: {cleanup_error}"
+                    )
                 finally:
                     if self.active_sessions.get(session_id) is session_state:
                         self.active_sessions.pop(session_id, None)
@@ -928,7 +955,10 @@ def test_main():
 
         for session_id, _session in sessions:
             try:
-                self._cleanup_session(session_id)
+                if self._cleanup_session(session_id) is not True:
+                    self.logger.error(
+                        f"CodeAgent shutdown cleanup did not complete for {session_id}"
+                    )
             except Exception as cleanup_error:
                 self.logger.error(
                     f"CodeAgent shutdown cleanup error for {session_id}: {cleanup_error}"

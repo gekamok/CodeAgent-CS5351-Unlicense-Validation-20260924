@@ -325,6 +325,14 @@ class CodeAgentPlugin(Star):
 
         if not security_script.exists():
             return unavailable('Security script not found')
+
+        def reject_duplicate_json_fields(pairs):
+            parsed = {}
+            for key, value in pairs:
+                if key in parsed:
+                    raise ValueError(f'Duplicate scanner JSON field: {key}')
+                parsed[key] = value
+            return parsed
         
         try:
             proc = subprocess.run(
@@ -337,7 +345,7 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=60
             )
-            report = json.loads(proc.stdout)
+            report = json.loads(proc.stdout, object_pairs_hook=reject_duplicate_json_fields)
             if not isinstance(report, dict):
                 return unavailable('Security scanner returned a non-object result')
             risk_levels = {'safe', 'low', 'medium', 'high', 'critical'}

@@ -154,6 +154,16 @@ class SecurityScanBoundaryTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertIn("Security scan unavailable", report["summary"])
 
+    def test_wrapper_fails_closed_on_duplicate_json_fields(self):
+        report = self._call_with_report(
+            '{"risk_level":"safe","risk_level":"critical",'
+            '"passed":true,"findings":[],"summary":"scan complete"}'
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["risk_level"], "high")
+        self.assertIn("Duplicate scanner JSON field", report["error"])
+
     def test_wrapper_fails_closed_on_invalid_report_schema(self):
         invalid_reports = [
             [],

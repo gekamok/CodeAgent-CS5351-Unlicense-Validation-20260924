@@ -74,26 +74,37 @@ class CodeAgentPlugin(Star):
             return True
         return False
     
-    def _cleanup_session(self, session_id: str):
+    def _cleanup_session(self, session_id: str) -> bool:
         if not isinstance(session_id, str) or not re.fullmatch(
             r"g(?:[A-Za-z0-9-]|%[0-9a-f]{6})*_u(?:[A-Za-z0-9-]|%[0-9a-f]{6})*",
             session_id,
         ):
-            return
+            return False
 
-        workspace_dir = self.workspace.resolve()
-        candidate = self.workspace / session_id
-        if candidate.is_symlink():
-            return
-
-        session_dir = candidate.resolve()
         try:
-            session_dir.relative_to(workspace_dir)
-        except (OSError, ValueError):
-            return
+            workspace_dir = self.workspace.resolve(strict=True)
+            candidate = self.workspace / session_id
+            if candidate.is_symlink():
+                return False
 
-        if session_dir != workspace_dir and session_dir.is_dir():
-            shutil.rmtree(session_dir, ignore_errors=True)
+            session_dir = candidate.resolve(strict=False)
+            session_dir.relative_to(workspace_dir)
+            if session_dir == workspace_dir:
+                return False
+
+            # Treat an already-removed session as an idempotent cleanup success.
+            if not session_dir.exists():
+                return True
+            if not session_dir.is_dir():
+                return False
+
+            # Do not suppress filesystem errors: callers can distinguish a
+            # completed cleanup from a stale directory that could not be removed.
+            shutil.rmtree(session_dir)
+            return not session_dir.exists()
+        except (OSError, ValueError):
+            return False
+
     
     def _ensure_nodejs(self):
         """检查并安装 Node.js"""

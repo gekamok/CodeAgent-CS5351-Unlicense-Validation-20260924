@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -97,6 +98,41 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertFalse(session_dir.exists())
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 
+    def test_cleanup_reports_success_and_removal_failure(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+
+        self.assertTrue(self.plugin._cleanup_session("g123_u456"))
+        self.assertFalse(session_dir.exists())
+        self.assertTrue(self.plugin._cleanup_session("g123_u456"))
+
+        session_dir.mkdir()
+        with patch("shutil.rmtree", side_effect=PermissionError("cleanup denied")):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+        self.assertTrue(session_dir.is_dir())
+
+    def test_cleanup_rejects_malformed_ids_and_non_directory_stale_state(self):
+        stale_file = self.workspace / "g123_u456"
+        stale_file.write_text("stale", encoding="utf-8")
+
+        self.assertFalse(self.plugin._cleanup_session("..\\outside"))
+        self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+        self.assertEqual(stale_file.read_text(encoding="utf-8"), "stale")
+
+    def test_cleanup_rejects_resolved_path_escape(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+        outside_dir = Path(self.temp_dir.name) / "outside"
+        outside_dir.mkdir()
+        sentinel = outside_dir / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with patch.object(Path, "resolve", side_effect=[self.workspace, outside_dir]):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+
+        self.assertTrue(session_dir.is_dir())
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+
     def test_process_metadata_is_created_inside_workspace(self):
         data = self.plugin._create_process_json("g123_u456", "make a tool", "py", "S")
         process_file = self.workspace / "g123_u456" / "process.json"
@@ -112,6 +148,18 @@ class SessionLifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plugin._create_process_json("CON", "x", "py", "S")
         self.assertFalse((Path(self.temp_dir.name) / "outside").exists())
+
+    def test_process_metadata_rejects_symlink_and_resolved_escape(self):
+        with patch.object(Path, "is_symlink", return_value=True):
+            with self.assertRaises(ValueError):
+                self.plugin._create_process_json("g123_u456", "x", "py", "S")
+
+        outside_dir = Path(self.temp_dir.name) / "outside"
+        outside_dir.mkdir()
+        with patch.object(Path, "resolve", side_effect=[self.workspace, outside_dir]):
+            with self.assertRaises(ValueError):
+                self.plugin._create_process_json("g123_u456", "x", "py", "S")
+        self.assertFalse((outside_dir / "process.json").exists())
 
 
 if __name__ == "__main__":

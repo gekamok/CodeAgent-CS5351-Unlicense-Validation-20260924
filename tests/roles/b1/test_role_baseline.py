@@ -145,6 +145,23 @@ class B1RequirementBaselineTests(unittest.TestCase):
             plugin._assess_project("Create an API endpoint")["type"], "api"
         )
 
+    def test_project_language_names_match_complete_tokens(self):
+        plugin = self.make_plugin()
+        cases = (
+            ("Build a JS parser", "js"),
+            ("实现JavaScript解析器", "js"),
+            ("Build a TypeScript parser", "ts"),
+            ("Build REST APIs", "api"),
+            ("Run a Bash script", "shell"),
+            ("Write unit tests", "python"),
+            ("Plan capital costs", "python"),
+        )
+        for requirement, expected_type in cases:
+            with self.subTest(requirement=requirement):
+                self.assertEqual(
+                    plugin._assess_project(requirement)["type"], expected_type
+                )
+
     def test_project_size_boundaries(self):
         plugin = self.make_plugin()
         expected_sizes = {29: "S", 30: "M", 99: "M", 100: "L"}

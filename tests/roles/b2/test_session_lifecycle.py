@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -96,6 +97,19 @@ class SessionLifecycleTests(unittest.TestCase):
 
         self.assertFalse(session_dir.exists())
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+
+    def test_cleanup_reports_success_and_removal_failure(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+
+        self.assertTrue(self.plugin._cleanup_session("g123_u456"))
+        self.assertFalse(session_dir.exists())
+        self.assertTrue(self.plugin._cleanup_session("g123_u456"))
+
+        session_dir.mkdir()
+        with patch("shutil.rmtree", side_effect=PermissionError("cleanup denied")):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+        self.assertTrue(session_dir.is_dir())
 
     def test_process_metadata_is_created_inside_workspace(self):
         data = self.plugin._create_process_json("g123_u456", "make a tool", "py", "S")

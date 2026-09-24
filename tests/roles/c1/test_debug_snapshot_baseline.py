@@ -107,6 +107,73 @@ class DebugAndSnapshotRegressionTests(unittest.TestCase):
     def test_rollback_returns_none_when_step_has_no_snapshot(self):
         self.assertIsNone(self.plugin._rollback_to_snapshot("session", "missing"))
 
+    def test_rollback_skips_invalid_newest_snapshot_and_restores_previous(self):
+        snapshot_dir = self.plugin.workspace / "session" / "snapshots"
+        snapshot_dir.mkdir(parents=True)
+        valid_snapshot = {
+            "step": "build",
+            "timestamp": 1.0,
+            "code": "previous valid code",
+            "files": [],
+        }
+        (snapshot_dir / "build_0001.json").write_text(
+            json.dumps(valid_snapshot), encoding="utf-8"
+        )
+        (snapshot_dir / "build_0002.json").write_text("{", encoding="utf-8")
+        (snapshot_dir / "build_0003.json").write_text(
+            json.dumps({**valid_snapshot, "code": None}), encoding="utf-8"
+        )
+
+        restored = self.plugin._rollback_to_snapshot("session", "build")
+
+        self.assertEqual(restored, valid_snapshot)
+
+    def test_rollback_returns_none_when_candidates_violate_snapshot_contract(self):
+        snapshot_dir = self.plugin.workspace / "session" / "snapshots"
+        snapshot_dir.mkdir(parents=True)
+        valid_shape = {
+            "step": "build",
+            "timestamp": 1.0,
+            "code": "code",
+            "files": [],
+        }
+        invalid_candidates = [
+            [],
+            {**valid_shape, "step": "different"},
+            {**valid_shape, "timestamp": True},
+            {**valid_shape, "files": ["not a file record"]},
+        ]
+        for index, candidate in enumerate(invalid_candidates, start=1):
+            (snapshot_dir / f"build_{index:04d}.json").write_text(
+                json.dumps(candidate), encoding="utf-8"
+            )
+
+        self.assertIsNone(self.plugin._rollback_to_snapshot("session", "build"))
+
+    def test_rollback_returns_none_when_snapshot_file_is_unreadable(self):
+        snapshot_dir = self.plugin.workspace / "session" / "snapshots"
+        snapshot_dir.mkdir(parents=True)
+        (snapshot_dir / "build_0001.json").write_text("{}", encoding="utf-8")
+
+        with patch("builtins.open", side_effect=PermissionError("read denied")):
+            restored = self.plugin._rollback_to_snapshot("session", "build")
+
+        self.assertIsNone(restored)
+
+    def test_rollback_ignores_files_for_a_different_step(self):
+        snapshot_dir = self.plugin.workspace / "session" / "snapshots"
+        snapshot_dir.mkdir(parents=True)
+        (snapshot_dir / "other_0001.json").write_text("{}", encoding="utf-8")
+
+        self.assertIsNone(self.plugin._rollback_to_snapshot("session", "build"))
+
+    def test_rollback_returns_none_when_snapshot_path_is_not_a_directory(self):
+        snapshot_path = self.plugin.workspace / "session" / "snapshots"
+        snapshot_path.parent.mkdir(parents=True)
+        snapshot_path.write_text("not a directory", encoding="utf-8")
+
+        self.assertIsNone(self.plugin._rollback_to_snapshot("session", "build"))
+
 
 if __name__ == "__main__":
     unittest.main()

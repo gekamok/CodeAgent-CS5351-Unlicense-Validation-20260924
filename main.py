@@ -65,6 +65,8 @@ class CodeAgentPlugin(Star):
         return match.group(1).strip() if match else None
     
     def _is_exit_command(self, text: str) -> bool:
+        if not isinstance(text, str):
+            return False
         return bool(re.search(r'(?:^|\s)/exitconver(?:\s|$)', text, re.IGNORECASE))
     
     def _sanitize_session_id(self, group_id: str, user_id: str) -> str:
@@ -542,22 +544,39 @@ class CodeAgentPlugin(Star):
             session_id,
         ):
             raise ValueError("session_id must be a safe workspace directory name")
+        if not all(isinstance(value, str) for value in (requirement, project_type, project_size)):
+            raise ValueError("process metadata values must be strings")
 
-        workspace_dir = self.workspace.resolve()
+        workspace_dir = self.workspace.resolve(strict=True)
         candidate = self.workspace / session_id
         if candidate.is_symlink():
             raise ValueError("session_id cannot target a symbolic link")
+        if candidate.exists():
+            raise ValueError("session directory already exists; refusing to reuse stale state")
 
-        session_dir = candidate.resolve()
+        session_dir = candidate.resolve(strict=False)
         try:
             session_dir.relative_to(workspace_dir)
         except (OSError, ValueError) as exc:
             raise ValueError("session_id must remain inside the workspace") from exc
 
-        if session_dir == workspace_dir:
+        if session_dir == workspace_dir or session_dir.parent != workspace_dir:
             raise ValueError("session_id must identify a child directory")
 
-        process_file = session_dir / 'process.json'
+        # mkdir without parents/exist_ok makes the session allocation exclusive.
+        # A leftover directory from a failed prior run must not be reused.
+        try:
+            candidate.mkdir()
+        except FileExistsError as exc:
+            raise ValueError("session directory was created concurrently") from exc
+
+        if candidate.is_symlink():
+            raise ValueError("session_id cannot target a symbolic link")
+        created_session_dir = candidate.resolve(strict=True)
+        if created_session_dir != session_dir or created_session_dir.parent != workspace_dir:
+            raise ValueError("session directory changed during creation")
+
+        process_file = created_session_dir / 'process.json'
         process_data = {
             'session_id': session_id,
             'requirement': requirement,
@@ -570,9 +589,15 @@ class CodeAgentPlugin(Star):
             'created_at': time.time(),
             'updated_at': time.time()
         }
-        process_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(process_file, 'w', encoding='utf-8') as f:
-            json.dump(process_data, f, ensure_ascii=False, indent=2)
+        if process_file.is_symlink():
+            raise ValueError("process metadata cannot target a symbolic link")
+        try:
+            # Exclusive creation prevents following or overwriting a stale file
+            # if it appears after the symlink check.
+            with open(process_file, 'x', encoding='utf-8') as f:
+                json.dump(process_data, f, ensure_ascii=False, indent=2)
+        except FileExistsError as exc:
+            raise ValueError("process metadata already exists") from exc
         return process_data
     
     def _save_snapshot(self, session_id: str, step: str, code: str, files: List[Dict]):

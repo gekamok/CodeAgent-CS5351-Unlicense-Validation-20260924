@@ -532,6 +532,8 @@ class CodeAgentPlugin(Star):
     
     def _assess_project(self, requirement: str) -> Dict[str, str]:
         requirement = requirement.strip()
+        requirement_tokens = set(re.findall(r"[A-Za-z0-9_]+", requirement.casefold()))
+
         project_type = 'python'
         if '网页' in requirement or '网站' in requirement:
             project_type = 'web'
@@ -541,13 +543,13 @@ class CodeAgentPlugin(Star):
             project_type = 'module'
         elif '工具' in requirement:
             project_type = 'toolkit'
-        elif 'api' in requirement.lower() or '接口' in requirement:
+        elif requirement_tokens.intersection({'api', 'apis'}) or '接口' in requirement:
             project_type = 'api'
-        elif 'js' in requirement.lower() or 'javascript' in requirement.lower():
+        elif requirement_tokens.intersection({'js', 'javascript'}):
             project_type = 'js'
-        elif 'ts' in requirement.lower() or 'typescript' in requirement.lower():
+        elif requirement_tokens.intersection({'ts', 'typescript'}):
             project_type = 'ts'
-        elif 'shell' in requirement.lower() or 'bash' in requirement.lower():
+        elif requirement_tokens.intersection({'shell', 'bash'}):
             project_type = 'shell'
         
         word_count = len(requirement)

@@ -43,11 +43,11 @@ def load_plugin_type():
         "astrbot.api.event": event,
         "astrbot.api.star": star,
     }
-    source_path = REPOSITORY_ROOT / "main.py"
+    plugin_file = REPOSITORY_ROOT / "main.py"
     module_name = "_b1_main_under_test"
-    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    spec = importlib.util.spec_from_file_location(module_name, plugin_file)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load plugin source at {source_path}")
+        raise RuntimeError(f"Cannot load plugin source at {plugin_file}")
     module = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, stubs):
         sys.modules[module_name] = module
@@ -144,6 +144,28 @@ class B1RequirementBaselineTests(unittest.TestCase):
         self.assertEqual(
             plugin._assess_project("Create an API endpoint")["type"], "api"
         )
+
+    def test_project_language_names_match_complete_tokens(self):
+        plugin = self.make_plugin()
+        cases = (
+            ("Build a JS parser", "js"),
+            ("实现JavaScript解析器", "js"),
+            ("Write Node.js utilities", "js"),
+            ("Build a javascript-based parser", "js"),
+            ("Build a TypeScript parser", "ts"),
+            ("Build a TS-node utility", "ts"),
+            ("Build REST APIs", "api"),
+            ("Run a Bash script", "shell"),
+            ("Write unit tests", "python"),
+            ("Plan capital costs", "python"),
+            ("Build a TStools helper", "python"),
+            ("Describe bashful behavior", "python"),
+        )
+        for requirement, expected_type in cases:
+            with self.subTest(requirement=requirement):
+                self.assertEqual(
+                    plugin._assess_project(requirement)["type"], expected_type
+                )
 
     def test_project_size_boundaries(self):
         plugin = self.make_plugin()

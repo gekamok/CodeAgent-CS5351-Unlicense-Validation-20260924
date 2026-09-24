@@ -8,15 +8,21 @@ CodeAgent 沙箱执行环境
 import os
 import sys
 import json
-import resource
 import signal
 import subprocess
+import threading
 import time
 import shutil
 import re
+import _thread
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass, field
+
+try:
+    import resource
+except ImportError:  # Windows does not provide POSIX resource limits.
+    resource = None
 
 try:
     from RestrictedPython import safe_builtins
@@ -55,6 +61,8 @@ class ResourceLimiter:
         self.config = config
     
     def apply_limits(self):
+        if resource is None:
+            return
         try:
             resource.setrlimit(resource.RLIMIT_CPU, (self.config.cpu_time_limit, self.config.cpu_time_limit + 1))
             mem = self.config.memory_limit_mb * 1024 * 1024
@@ -74,19 +82,43 @@ class TimeoutManager:
         self.timeout = timeout_seconds
         self._timed_out = False
         self._old_handler = None
+        self._timer = None
+        self._active = False
+        self._uses_alarm = False
+
+    def _interrupt_main(self):
+        if self._active:
+            self._timed_out = True
+            _thread.interrupt_main()
     
     def __enter__(self):
-        def _handler(signum, frame):
-            self._timed_out = True
-            raise TimeoutError(f"执行超时（{self.timeout}秒）")
-        self._old_handler = signal.signal(signal.SIGALRM, _handler)
-        signal.alarm(self.timeout)
+        self._active = True
+        if hasattr(signal, 'SIGALRM') and hasattr(signal, 'alarm'):
+            def _handler(signum, frame):
+                self._timed_out = True
+                raise TimeoutError(f"执行超时（{self.timeout}秒）")
+            self._old_handler = signal.signal(signal.SIGALRM, _handler)
+            signal.alarm(self.timeout)
+            self._uses_alarm = True
+        else:
+            # Windows has no SIGALRM. Interrupt the main thread so restricted
+            # Python execution still observes its configured wall-time limit.
+            self._timer = threading.Timer(self.timeout, self._interrupt_main)
+            self._timer.daemon = True
+            self._timer.start()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        signal.alarm(0)
-        if self._old_handler:
-            signal.signal(signal.SIGALRM, self._old_handler)
+        self._active = False
+        if self._uses_alarm:
+            signal.alarm(0)
+            if self._old_handler is not None:
+                signal.signal(signal.SIGALRM, self._old_handler)
+        elif self._timer is not None:
+            self._timer.cancel()
+
+        if self._timed_out and exc_type in (None, KeyboardInterrupt):
+            raise TimeoutError(f"执行超时（{self.timeout}秒）")
         return False
 
 
@@ -228,7 +260,8 @@ class StandardExecutor:
         file_path = session_dir / filename
         
         if language == 'python':
-            cmd = ['python3', '-u', str(file_path)] + (args or [])
+            interpreter = sys.executable if os.name == 'nt' else 'python3'
+            cmd = [interpreter, '-u', str(file_path)] + (args or [])
         elif language == 'javascript':
             cmd = ['node', str(file_path)] + (args or [])
         elif language == 'bash':
@@ -271,7 +304,7 @@ class StandardExecutor:
     
     def _build_env(self) -> Dict[str, str]:
         env = os.environ.copy()
-        env['TMPDIR'] = str(self.config.workspace_root / 'tmp')
+        env['TMPDIR'] = str(Path(self.config.workspace_root) / 'tmp')
         env['TEMP'] = env['TMPDIR']
         env['TMP'] = env['TMPDIR']
         env['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -281,7 +314,10 @@ class StandardExecutor:
             env['http_proxy'] = ''
             env['https_proxy'] = ''
             env['no_proxy'] = '*'
-        env['PATH'] = '/usr/local/bin:/usr/bin:/bin'
+        if os.name == 'nt':
+            env['PATH'] = os.environ.get('PATH', '')
+        else:
+            env['PATH'] = '/usr/local/bin:/usr/bin:/bin'
         return env
 
 
@@ -327,26 +363,23 @@ class SandboxExecutor:
         time_elapsed = 0
         
         try:
-            with TimeoutManager(self.config.wall_time_limit):
-                if language == 'python' and self.config.use_restricted_python and RESTRICTED_PYTHON_AVAILABLE:
+            if language == 'python' and self.config.use_restricted_python and RESTRICTED_PYTHON_AVAILABLE:
+                with TimeoutManager(self.config.wall_time_limit):
                     stdout, stderr, exit_code = self.restricted_executor.execute_code(code, session_dir, filename)
                     result['execution_method'] = 'restricted_python'
-                else:
-                    if language != 'python' or not RESTRICTED_PYTHON_AVAILABLE:
-                        stdout, stderr, exit_code, time_elapsed = self.standard_executor.execute_code(
-                            code, session_dir, language, filename, args
-                        )
-                    else:
-                        stdout, stderr, exit_code, time_elapsed = self.standard_executor.execute_code(
-                            code, session_dir, 'python', filename, args
-                        )
-                
-                result['stdout'] = stdout[:100000] if len(stdout) > 100000 else stdout
-                result['stderr'] = stderr[:50000] if len(stderr) > 50000 else stderr
-                if len(stdout) > 100000:
-                    result['stdout'] += f"\n... (输出截断，共 {len(stdout)} 字符)"
-                result['exit_code'] = exit_code
-                result['time_elapsed'] = time_elapsed or 0
+            else:
+                # Standard execution already applies a timeout to its child
+                # process, which it can terminate directly.
+                stdout, stderr, exit_code, time_elapsed = self.standard_executor.execute_code(
+                    code, session_dir, language, filename, args
+                )
+
+            result['stdout'] = stdout[:100000] if len(stdout) > 100000 else stdout
+            result['stderr'] = stderr[:50000] if len(stderr) > 50000 else stderr
+            if len(stdout) > 100000:
+                result['stdout'] += f"\n... (输出截断，共 {len(stdout)} 字符)"
+            result['exit_code'] = exit_code
+            result['time_elapsed'] = time_elapsed or 0
                 
         except TimeoutError as e:
             result['error'] = str(e)

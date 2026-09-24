@@ -42,8 +42,8 @@ class CodeAgentPlugin(Star):
     
     def _extract_requirement(self, text: str) -> Optional[str]:
         patterns = [
-            r'/agent\s+(.+)',
-            r'@.*?/agent\s+(.+)'
+            r'/agent\s+(\S[\s\S]*)',
+            r'@.*?/agent\s+(\S[\s\S]*)'
         ]
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
@@ -52,10 +52,20 @@ class CodeAgentPlugin(Star):
         return None
     
     def _is_exit_command(self, text: str) -> bool:
-        return bool(re.search(r'/exitconver', text, re.IGNORECASE))
+        return bool(re.search(r'(?:^|\s)/exitconver(?:\s|$)', text, re.IGNORECASE))
     
     def _sanitize_session_id(self, group_id: str, user_id: str) -> str:
-        return f"{group_id}_{user_id}".replace(':', '_').replace('/', '_')
+        def encode_component(value: str) -> str:
+            # Keep common ASCII ID characters readable; encode everything else
+            # with a fixed-width escape so separators and dot segments cannot
+            # become path syntax or collide with a literal escape sequence.
+            return "".join(
+                char if char.isascii() and (char.isalnum() or char == "-")
+                else f"%{ord(char):06x}"
+                for char in str(value)
+            )
+
+        return f"g{encode_component(group_id)}_u{encode_component(user_id)}"
     
     def _is_in_blacklist(self, user_id: str, group_id: str) -> bool:
         admin_blacklist = self._get_config("admin_blacklist", [])
@@ -67,8 +77,24 @@ class CodeAgentPlugin(Star):
         return False
     
     def _cleanup_session(self, session_id: str):
-        session_dir = self.workspace / session_id
-        if session_dir.exists():
+        if not isinstance(session_id, str) or not re.fullmatch(
+            r"g(?:[A-Za-z0-9-]|%[0-9a-f]{6})*_u(?:[A-Za-z0-9-]|%[0-9a-f]{6})*",
+            session_id,
+        ):
+            return
+
+        workspace_dir = self.workspace.resolve()
+        candidate = self.workspace / session_id
+        if candidate.is_symlink():
+            return
+
+        session_dir = candidate.resolve()
+        try:
+            session_dir.relative_to(workspace_dir)
+        except (OSError, ValueError):
+            return
+
+        if session_dir != workspace_dir and session_dir.is_dir():
             shutil.rmtree(session_dir, ignore_errors=True)
     
     def _ensure_nodejs(self):
@@ -429,7 +455,27 @@ class CodeAgentPlugin(Star):
         return {'type': project_type, 'size': size}
     
     def _create_process_json(self, session_id: str, requirement: str, project_type: str, project_size: str):
-        process_file = self.workspace / session_id / 'process.json'
+        if not isinstance(session_id, str) or not re.fullmatch(
+            r"g(?:[A-Za-z0-9-]|%[0-9a-f]{6})*_u(?:[A-Za-z0-9-]|%[0-9a-f]{6})*",
+            session_id,
+        ):
+            raise ValueError("session_id must be a safe workspace directory name")
+
+        workspace_dir = self.workspace.resolve()
+        candidate = self.workspace / session_id
+        if candidate.is_symlink():
+            raise ValueError("session_id cannot target a symbolic link")
+
+        session_dir = candidate.resolve()
+        try:
+            session_dir.relative_to(workspace_dir)
+        except (OSError, ValueError) as exc:
+            raise ValueError("session_id must remain inside the workspace") from exc
+
+        if session_dir == workspace_dir:
+            raise ValueError("session_id must identify a child directory")
+
+        process_file = session_dir / 'process.json'
         process_data = {
             'session_id': session_id,
             'requirement': requirement,

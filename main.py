@@ -323,12 +323,13 @@ class CodeAgentPlugin(Star):
                 return unavailable('Security scanner returned an invalid summary')
             if proc.returncode not in (0, 1):
                 return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
-            if (
-                proc.returncode == 1
-                and report.get('passed', True)
-                and report.get('risk_level') not in {'high', 'critical'}
-            ):
-                return unavailable('Security scanner exited unsuccessfully with an inconsistent report')
+            high_risk = report['risk_level'] in {'high', 'critical'}
+            if high_risk and report['passed']:
+                return unavailable('Security scanner marked a high-risk report as passed')
+            scan_failed = not report['passed'] or high_risk
+            expected_exit_code = 1 if scan_failed else 0
+            if proc.returncode != expected_exit_code:
+                return unavailable('Security scanner exit code contradicts its report')
             return report
         except subprocess.TimeoutExpired:
             return unavailable('Security scanner timed out')

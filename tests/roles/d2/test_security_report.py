@@ -2,6 +2,7 @@
 
 import json
 import importlib
+import subprocess
 import sys
 import types
 import unittest
@@ -150,6 +151,31 @@ class SecurityScanBoundaryTests(unittest.TestCase):
         report = self._call_with_report(json.dumps(payload))
 
         self.assertEqual(report, payload)
+
+    def test_wrapper_fails_closed_when_exit_code_conflicts_with_report(self):
+        cases = [
+            (0, {**self._valid_report(), "passed": False}),
+            (1, self._valid_report()),
+            (1, {**self._valid_report(), "risk_level": "critical"}),
+        ]
+
+        for returncode, payload in cases:
+            with self.subTest(returncode=returncode, payload=payload):
+                report = self._call_with_report(json.dumps(payload), returncode=returncode)
+
+                self.assertFalse(report["passed"])
+                self.assertIn("Security scan unavailable", report["summary"])
+
+    def test_wrapper_fails_closed_on_timeout(self):
+        plugin = object.__new__(self.plugin_class)
+        plugin.scripts_dir = SECURITY_SCRIPTS
+        timeout = subprocess.TimeoutExpired("security scan", 60)
+        with patch.object(self.main_module.subprocess, "run", side_effect=timeout):
+            report = plugin._call_security_scan("print('ok')", "python")
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["risk_level"], "high")
+        self.assertIn("timed out", report["error"])
 
 
 if __name__ == "__main__":

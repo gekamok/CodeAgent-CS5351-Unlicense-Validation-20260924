@@ -691,5 +691,7 @@ def test_main():
         self.logger.info("CodeAgent 插件已卸载")
 
 
-def get_star(context: Context):
-    return CodeAgentPlugin(context)
+def get_star(context: Context, config: Optional[AstrBotConfig] = None):
+    # AstrBot integrations that pass configuration keep their values; callers
+    # using the context-only factory still receive the schema defaults.
+    return CodeAgentPlugin(context, config if config is not None else {})

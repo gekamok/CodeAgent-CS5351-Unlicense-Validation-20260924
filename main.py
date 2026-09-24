@@ -340,16 +340,32 @@ class CodeAgentPlugin(Star):
             report = json.loads(proc.stdout)
             if not isinstance(report, dict):
                 return unavailable('Security scanner returned a non-object result')
-            if report.get('risk_level') not in {'safe', 'low', 'medium', 'high', 'critical'}:
+            risk_levels = {'safe', 'low', 'medium', 'high', 'critical'}
+            if report.get('risk_level') not in risk_levels:
                 return unavailable('Security scanner returned an invalid risk level')
+            if not isinstance(report.get('passed'), bool):
+                return unavailable('Security scanner returned an invalid passed value')
+            findings = report.get('findings')
+            if not isinstance(findings, list):
+                return unavailable('Security scanner returned invalid findings')
+            if any(
+                not isinstance(finding, dict)
+                or finding.get('level') not in risk_levels
+                or not isinstance(finding.get('message'), str)
+                for finding in findings
+            ):
+                return unavailable('Security scanner returned an invalid finding')
+            if not isinstance(report.get('summary'), str):
+                return unavailable('Security scanner returned an invalid summary')
             if proc.returncode not in (0, 1):
                 return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
-            if (
-                proc.returncode == 1
-                and report.get('passed', True)
-                and report.get('risk_level') not in {'high', 'critical'}
-            ):
-                return unavailable('Security scanner exited unsuccessfully with an inconsistent report')
+            high_risk = report['risk_level'] in {'high', 'critical'}
+            if high_risk and report['passed']:
+                return unavailable('Security scanner marked a high-risk report as passed')
+            scan_failed = not report['passed'] or high_risk
+            expected_exit_code = 1 if scan_failed else 0
+            if proc.returncode != expected_exit_code:
+                return unavailable('Security scanner exit code contradicts its report')
             return report
         except subprocess.TimeoutExpired:
             return unavailable('Security scanner timed out')

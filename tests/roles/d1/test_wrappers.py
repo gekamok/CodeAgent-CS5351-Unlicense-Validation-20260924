@@ -74,7 +74,9 @@ class D1WrapperTests(unittest.TestCase):
         )
 
     def test_sandbox_uses_the_running_python_interpreter(self):
-        payload = {"success": True, "stdout": "ok"}
+        payload = {
+            "success": True, "stdout": "ok", "stderr": "", "exit_code": 0, "error": None
+        }
         completed = subprocess.CompletedProcess(
             args=[sys.executable],
             returncode=0,
@@ -87,6 +89,29 @@ class D1WrapperTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.args[0][0], sys.executable)
         self.assertEqual(result, payload)
+
+    def test_sandbox_rejects_non_object_json_results(self):
+        completed = subprocess.CompletedProcess(
+            args=[sys.executable], returncode=0, stdout='[]', stderr=''
+        )
+        with patch.object(PLUGIN_MODULE.subprocess, "run", return_value=completed):
+            result = self.plugin._call_sandbox("print('ok')", "session")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "Sandbox returned an invalid result")
+
+    def test_sandbox_rejects_success_with_nonzero_exit_code(self):
+        payload = {
+            "success": True, "stdout": "ok", "stderr": "", "exit_code": 1, "error": None
+        }
+        completed = subprocess.CompletedProcess(
+            args=[sys.executable], returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+        with patch.object(PLUGIN_MODULE.subprocess, "run", return_value=completed):
+            result = self.plugin._call_sandbox("print('ok')", "session")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "Sandbox returned an inconsistent result")
 
     def test_missing_checker_script_fails_closed(self):
         self.plugin.scripts_dir = self.plugin.scripts_dir / "missing"
@@ -122,7 +147,7 @@ class D1WrapperTests(unittest.TestCase):
         version = subprocess.CompletedProcess(
             args=["node", "-v"], returncode=0, stdout="v26", stderr=""
         )
-        payload = {"passed": True, "issues": []}
+        payload = {"passed": True, "issues": [], "summary": "complete"}
         checker = subprocess.CompletedProcess(
             args=["node", "checker.js"],
             returncode=1,
@@ -135,7 +160,53 @@ class D1WrapperTests(unittest.TestCase):
             result = self.plugin._call_js_checker("const x = 1;")
 
         self.assertFalse(result["passed"])
-        self.assertEqual(result["error"], "JS Checker exited with code 1")
+        self.assertEqual(result["error"], "JS Checker exit code 1 contradicts its result")
+
+    def test_checker_rejects_a_pass_with_blocking_findings(self):
+        version = subprocess.CompletedProcess(
+            args=["node", "-v"], returncode=0, stdout="v26", stderr=""
+        )
+        payload = {
+            "passed": True,
+            "issues": [{"level": "high", "message": "unsafe"}],
+            "summary": "clean",
+        }
+        checker = subprocess.CompletedProcess(
+            args=["node", "checker.js"],
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+        with patch.object(
+            PLUGIN_MODULE.subprocess, "run", side_effect=[version, checker]
+        ):
+            result = self.plugin._call_js_checker("const x = 1;")
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["error"], "JS Checker exit code 0 contradicts its result"
+        )
+
+    def test_checker_rejects_an_unexpected_process_exit_code(self):
+        version = subprocess.CompletedProcess(
+            args=["node", "-v"], returncode=0, stdout="v26", stderr=""
+        )
+        payload = {"passed": False, "issues": [], "summary": "incomplete"}
+        checker = subprocess.CompletedProcess(
+            args=["node", "checker.js"],
+            returncode=2,
+            stdout=json.dumps(payload),
+            stderr="tool error",
+        )
+        with patch.object(
+            PLUGIN_MODULE.subprocess, "run", side_effect=[version, checker]
+        ):
+            result = self.plugin._call_js_checker("const x = 1;")
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["error"], "JS Checker exit code 2 contradicts its result"
+        )
 
     def test_invalid_checker_json_fails_closed(self):
         version = subprocess.CompletedProcess(

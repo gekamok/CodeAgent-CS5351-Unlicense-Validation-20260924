@@ -293,10 +293,37 @@ class StandardExecutor:
                 return stdout, stderr, proc.returncode, time.time() - start_time
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except:
-                    proc.kill()
-                proc.wait(timeout=2)
+                    if os.name != 'nt' and hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+                cleanup_error = None
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception as exc:
+                        cleanup_error = exc
+                    try:
+                        proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        cleanup_error = cleanup_error or 'child process remained alive after termination'
+                    except Exception as exc:
+                        cleanup_error = cleanup_error or exc
+                    else:
+                        cleanup_error = None
+                except Exception as exc:
+                    cleanup_error = exc
+
+                if cleanup_error:
+                    return "", f"执行超时，进程清理失败: {cleanup_error}", -1, time.time() - start_time
                 return "", f"执行超时（{self.config.wall_time_limit}秒）", -1, time.time() - start_time
                 
         except Exception as e:

@@ -20,7 +20,7 @@ The Sprint 2 review found `_rollback_to_snapshot` had direct helper tests but th
 - Week 10 C1 suite: **10 tests passed** with `C:\ProgramData\miniconda3\python.exe`.
 - Week 11 C1 suite: **11 tests passed** with `C:\ProgramData\miniconda3\python.exe`.
 - Week 10 and 11 Python syntax checks passed for `main.py` and the C1 test module; both weeks' `git diff --check` returned exit 0.
-- Week 11 scan found no `*_REPO`, `*_COMMIT`, `*_SOURCE_URL`, URL, or full-length SHA patterns in C1 `main.py`, tests, or evidence.
+- Week 11 scan found no provenance field names, URLs, or full-length SHA patterns in C1 `main.py`, tests, or evidence.
 
 The successful suite runs used `cmd.exe`, a pre-created `.testtmp\workspace` fixture root, and elevated filesystem access because normal restricted runs raised `WinError 5` on temporary-path operations. The failed attempts are recorded in the Week 10 and Week 11 evidence and are not counted as passes.
 

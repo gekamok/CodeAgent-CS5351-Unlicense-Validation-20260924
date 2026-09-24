@@ -20,4 +20,4 @@ Node.js/npm subprocesses are mocked in the role tests. No live `npm install`, As
 
 ## Pull request evidence and integration note
 
-The public GitHub page for A1 Sprint 2 PR #11 displayed state **Open** when checked for these notes. The local `origin/main` history in this worktree contains a merge commit for #11, so the local fetched history and the public PR page disagree at this observation point. `gh pr view 11` could not reach the API because the configured proxy refused the connection; the read-only page supplied the observed state. No new Sprint 3 PR has been created, and no PR merge is claimed in this A1 evidence.
+The public GitHub HTML page for A1 Sprint 2 PR #11 displayed state **Open** when first checked for these notes. A subsequent fresh GitHub API lookup by the captain returned `state=closed` and `merged=true`, consistent with the merge history in `origin/main`. The HTML view was stale/conflicting; the API and remote main are authoritative, so PR #11 is recorded as merged. `gh pr view 11` could not reach the API because the configured proxy refused the connection. At the time of this Week 12 check, no new Sprint 3 PR had been created.

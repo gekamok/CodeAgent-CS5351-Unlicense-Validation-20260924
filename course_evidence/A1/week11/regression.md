@@ -12,7 +12,7 @@ Expanded `tests/roles/a1/test_config_contract.py` with boundary cases for a `nod
 
 ## Forbidden-metadata scan
 
-Scanned the tracked repository with `git grep -n _SOURCE_URL`, `git grep -n _COMMIT`, `git grep -n _REPO`, and `git grep -n https://`; searched tracked course evidence for 40-character hexadecimal strings. `_SOURCE_URL` and `_COMMIT` had no matches. The `_REPO` scan found only `_REPO_ROOT` in C1's test loader. URL matches were the Unlicense license reference and existing Node.js installer and GitHub API runtime URLs; none are source-provenance fields. No 40-character hexadecimal strings appeared in the course evidence. The A1 Week 10–11 changes add no external source path, source URL, source SHA, or source-tracking field.
+Scanned the tracked repository for source-tracking fields and web links, and searched course evidence for long hexadecimal identifiers. The field scan found no source-tracking values; the only repository-related match was a local root variable in C1's test loader. Web-link matches were the Unlicense license reference and existing Node.js installer and GitHub API runtime URLs; none point to project source. A Week 13 full-tree check found historical Git commit IDs in earlier course evidence, so the initial Week 11 long-hex search result was incomplete. Those identifiers document this project's Git history, not external-source SHAs. The A1 changes add no external source path, source URL, source SHA, or source-tracking value.
 
 ## Limits
 

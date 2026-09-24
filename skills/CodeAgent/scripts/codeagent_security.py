@@ -61,6 +61,9 @@ class SecurityReport:
     test_coverage: float = 0.0
     test_results: Dict[str, Any] = field(default_factory=dict)
     summary: str = ""
+    schema_version: int = 1
+    scanner_status: Dict[str, str] = field(default_factory=dict)
+    limitations: List[str] = field(default_factory=list)
     
     def add_finding(self, finding: SecurityFinding):
         self.findings.append(finding)
@@ -637,12 +640,17 @@ class CodeSecurityScanner:
     
     def scan_python(self, code: str, file_path: str = "") -> SecurityReport:
         report = SecurityReport(file_path=file_path)
+        report.scanner_status["pattern_checker"] = "available"
+        report.limitations.append(
+            "Built-in pattern checks are heuristic and do not establish rule completeness."
+        )
         
         # 安全检查
         self._check_dangerous_patterns(code, report)
         
         # Ruff 检查
         ruff_result = self.ruff_checker.check(code, file_path)
+        self._record_tool_status(report, "ruff", ruff_result)
         if ruff_result.get("error"):
             report.add_finding(SecurityFinding(
                 level=RiskLevel.LOW,
@@ -673,6 +681,7 @@ class CodeSecurityScanner:
         
         # Mypy 检查
         mypy_result = self.mypy_checker.check(code, file_path)
+        self._record_tool_status(report, "mypy", mypy_result)
         if mypy_result.get("error"):
             report.add_finding(SecurityFinding(
                 level=RiskLevel.LOW,
@@ -702,6 +711,7 @@ class CodeSecurityScanner:
         
         # Bandit 检查
         bandit_result = self.bandit_checker.check(code, file_path)
+        self._record_tool_status(report, "bandit", bandit_result)
         if bandit_result.get("error"):
             report.add_finding(SecurityFinding(
                 level=RiskLevel.LOW,
@@ -750,9 +760,14 @@ class CodeSecurityScanner:
     def scan_shell(self, code: str, file_path: str = "") -> SecurityReport:
         """扫描 Shell 代码"""
         report = SecurityReport(file_path=file_path)
+        report.scanner_status["pattern_checker"] = "available"
+        report.limitations.append(
+            "Built-in pattern checks are heuristic and do not establish rule completeness."
+        )
         
         # ShellCheck 检查
         shellcheck_result = self.shellcheck_checker.check(code, file_path)
+        self._record_tool_status(report, "shellcheck", shellcheck_result)
         
         if shellcheck_result.get("error"):
             report.add_finding(SecurityFinding(
@@ -792,6 +807,19 @@ class CodeSecurityScanner:
         
         self._generate_summary(report)
         return report
+
+    @staticmethod
+    def _record_tool_status(
+        report: SecurityReport, tool: str, result: Dict[str, Any]
+    ) -> None:
+        """Record whether an optional analyzer produced usable results."""
+        if result.get("error"):
+            report.scanner_status[tool] = "unavailable"
+            report.limitations.append(
+                f"{tool} results are unavailable; scanner coverage is incomplete."
+            )
+        else:
+            report.scanner_status[tool] = "available"
     
     def _check_dangerous_patterns(self, code: str, report: SecurityReport):
         """检查危险模式"""

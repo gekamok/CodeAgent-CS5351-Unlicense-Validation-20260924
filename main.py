@@ -357,6 +357,22 @@ class CodeAgentPlugin(Star):
                 return unavailable('Security scanner returned an invalid finding')
             if not isinstance(report.get('summary'), str):
                 return unavailable('Security scanner returned an invalid summary')
+            if 'schema_version' in report:
+                if type(report['schema_version']) is not int or report['schema_version'] != 1:
+                    return unavailable('Security scanner returned an unsupported schema version')
+                scanner_status = report.get('scanner_status')
+                if (
+                    not isinstance(scanner_status, dict)
+                    or any(
+                        not isinstance(tool, str)
+                        or not isinstance(status, str)
+                        or status not in {'available', 'unavailable'}
+                        for tool, status in scanner_status.items()
+                    )
+                    or not isinstance(report.get('limitations'), list)
+                    or any(not isinstance(note, str) for note in report['limitations'])
+                ):
+                    return unavailable('Security scanner returned invalid scanner metadata')
             if proc.returncode not in (0, 1):
                 return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
             high_risk = report['risk_level'] in {'high', 'critical'}

@@ -225,17 +225,56 @@ class CodeAgentPlugin(Star):
             return False
     
     def _ensure_js_dependencies(self):
-        """确保 JS 检查器的依赖已安装"""
+        """Ensure the JavaScript checker's declared npm packages are installed."""
         js_checker = self.scripts_dir / "codeagent_js_checker.js"
         package_json = self.scripts_dir / "package.json"
         node_modules = self.scripts_dir / "node_modules"
-        
-        if not js_checker.exists():
+
+        if not js_checker.exists() or not package_json.is_file():
             return
 
-        if not package_json.exists() or node_modules.exists():
+        try:
+            manifest = json.loads(package_json.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("top-level JSON value must be an object")
+
+            required_packages = set()
+            for section in ("dependencies", "devDependencies", "optionalDependencies"):
+                packages = manifest.get(section, {})
+                if not isinstance(packages, dict) or not all(
+                    isinstance(name, str) and name.strip() for name in packages
+                ):
+                    raise ValueError(f"{section} must be an object with package names")
+                required_packages.update(packages)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            self.logger.warning(
+                f"JS dependency manifest is invalid; dependency setup skipped: {exc}"
+            )
             return
-        
+
+        if not required_packages:
+            self.logger.info("JS dependency manifest declares no npm packages; setup skipped")
+            return
+
+        if node_modules.exists() and not node_modules.is_dir():
+            self.logger.warning(
+                "node_modules exists but is not a directory; JS dependency setup skipped"
+            )
+            return
+
+        missing_packages = []
+        if node_modules.is_dir():
+            missing_packages = sorted(
+                name for name in required_packages
+                if not (node_modules / name / "package.json").is_file()
+            )
+            if not missing_packages:
+                return
+            self.logger.info(
+                "JS dependencies are incomplete; npm install will repair missing packages: "
+                + ", ".join(missing_packages)
+            )
+
         # 检查 Node.js 是否可用
         try:
             subprocess.run(
@@ -251,7 +290,8 @@ class CodeAgentPlugin(Star):
             self.logger.warning(f"Node.js version check failed; JS dependency setup skipped: {exc}")
             return
 
-        self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
+        if not missing_packages:
+            self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
         try:
             proc = subprocess.run(
                 ['npm', 'install', '--production=false'],

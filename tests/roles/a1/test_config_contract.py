@@ -85,7 +85,7 @@ def compile_main_method(method_name: str):
     isolated_module = ast.fix_missing_locations(
         ast.Module(body=[isolated_class], type_ignores=[])
     )
-    namespace = {"subprocess": subprocess}
+    namespace = {"json": json, "subprocess": subprocess}
     exec(compile(isolated_module, str(MAIN_PATH), "exec"), namespace)
     return namespace["ConfigReader"]
 
@@ -93,15 +93,32 @@ def compile_main_method(method_name: str):
 class FakeScriptPath:
     """Minimal pathlib-like objects for dependency setup without filesystem writes."""
 
-    def __init__(self, present_names, name="scripts"):
+    DEFAULT_MANIFEST = json.dumps(
+        {"devDependencies": {"eslint": "^8.57.0", "typescript": "^5.3.0"}}
+    )
+
+    def __init__(self, present_names, name="scripts", manifest_text=None):
         self.present_names = present_names
         self.name = name
+        self.manifest_text = manifest_text or self.DEFAULT_MANIFEST
 
     def __truediv__(self, child_name):
-        return FakeScriptPath(self.present_names, child_name)
+        child_path = child_name if self.name == "scripts" else f"{self.name}/{child_name}"
+        return FakeScriptPath(self.present_names, child_path, self.manifest_text)
 
     def exists(self):
         return self.name in self.present_names
+
+    def is_file(self):
+        return self.exists()
+
+    def is_dir(self):
+        return self.exists()
+
+    def read_text(self, encoding=None):
+        if self.name != "package.json" or not self.exists():
+            raise FileNotFoundError(self.name)
+        return self.manifest_text
 
     def __str__(self):
         return "mock-scripts" if self.name == "scripts" else self.name
@@ -203,7 +220,13 @@ class ConfigContractTests(unittest.TestCase):
     def test_js_dependency_preparation_skips_existing_node_modules(self):
         method_type = compile_main_method("_ensure_js_dependencies")
         scripts_dir = FakeScriptPath(
-            {"codeagent_js_checker.js", "package.json", "node_modules"}
+            {
+                "codeagent_js_checker.js",
+                "package.json",
+                "node_modules",
+                "node_modules/eslint/package.json",
+                "node_modules/typescript/package.json",
+            }
         )
         harness = method_type()
         harness.scripts_dir = scripts_dir
@@ -214,6 +237,65 @@ class ConfigContractTests(unittest.TestCase):
             harness._ensure_js_dependencies()
 
         run.assert_not_called()
+
+    def test_js_dependency_preparation_repairs_partial_node_modules(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        scripts_dir = FakeScriptPath(
+            {
+                "codeagent_js_checker.js",
+                "package.json",
+                "node_modules",
+                "node_modules/eslint/package.json",
+            }
+        )
+        harness = method_type()
+        harness.scripts_dir = scripts_dir
+        harness.logger = Mock()
+        node_result = subprocess.CompletedProcess(["node", "-v"], 0, stdout="v20", stderr="")
+        npm_result = subprocess.CompletedProcess(
+            ["npm", "install", "--production=false"], 0, stdout="", stderr=""
+        )
+
+        with patch("subprocess.run", side_effect=[node_result, npm_result]) as run:
+            harness._ensure_js_dependencies()
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0], ["npm", "install", "--production=false"])
+        self.assertTrue(
+            any("incomplete" in call.args[0] and "typescript" in call.args[0]
+                for call in harness.logger.info.call_args_list)
+        )
+
+    def test_js_dependency_preparation_skips_empty_manifest_without_node_modules(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        scripts_dir = FakeScriptPath(
+            {"codeagent_js_checker.js", "package.json"},
+            manifest_text='{"dependencies": {}, "devDependencies": {}}',
+        )
+        harness = method_type()
+        harness.scripts_dir = scripts_dir
+        harness.logger = Mock()
+
+        with patch("subprocess.run") as run:
+            harness._ensure_js_dependencies()
+
+        run.assert_not_called()
+        self.assertIn("no npm packages", harness.logger.info.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_invalid_manifest(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        scripts_dir = FakeScriptPath(
+            {"codeagent_js_checker.js", "package.json"}, manifest_text="not JSON"
+        )
+        harness = method_type()
+        harness.scripts_dir = scripts_dir
+        harness.logger = Mock()
+
+        with patch("subprocess.run") as run:
+            harness._ensure_js_dependencies()
+
+        run.assert_not_called()
+        self.assertIn("manifest is invalid", harness.logger.warning.call_args.args[0])
 
     def test_js_dependency_preparation_skips_missing_checker_or_manifest(self):
         method_type = compile_main_method("_ensure_js_dependencies")

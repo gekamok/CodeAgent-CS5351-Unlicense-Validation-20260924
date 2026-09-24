@@ -150,11 +150,16 @@ class B1RequirementBaselineTests(unittest.TestCase):
         cases = (
             ("Build a JS parser", "js"),
             ("实现JavaScript解析器", "js"),
+            ("Write Node.js utilities", "js"),
+            ("Build a javascript-based parser", "js"),
             ("Build a TypeScript parser", "ts"),
+            ("Build a TS-node utility", "ts"),
             ("Build REST APIs", "api"),
             ("Run a Bash script", "shell"),
             ("Write unit tests", "python"),
             ("Plan capital costs", "python"),
+            ("Build a TStools helper", "python"),
+            ("Describe bashful behavior", "python"),
         )
         for requirement, expected_type in cases:
             with self.subTest(requirement=requirement):

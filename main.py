@@ -337,32 +337,33 @@ class CodeAgentPlugin(Star):
             return {'success': False, 'error': str(e)}
     
     def _analyze_error(self, stderr: str) -> Dict[str, Any]:
-        lines = stderr.split('\n')
+        lines = stderr.splitlines()
         error_type = 'Unknown'
         error_line = 0
         error_message = stderr[:500]
-        
+
         for line in lines:
+            line_match = re.search(r'\bline\s+(\d+)\b', line, re.IGNORECASE)
+            if line_match:
+                error_line = int(line_match.group(1))
+
             if 'Error' in line or 'Exception' in line:
                 match = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*(?:Error|Exception))', line)
                 if match:
                     error_type = match.group(1)
-                line_match = re.search(r'line\s+(\d+)', line, re.IGNORECASE)
-                if line_match:
-                    error_line = int(line_match.group(1))
                 break
-        
+
         return {
             'error_type': error_type,
             'error_line': error_line,
             'error_message': error_message
         }
-    
+
     def _generate_debug_fix(self, error_info: Dict[str, Any]) -> str:
         error_type = error_info.get('error_type', '')
         error_message = error_info.get('error_message', '')
         
-        if 'Import' in error_type:
+        if 'Import' in error_type or 'ModuleNotFound' in error_type:
             missing = re.search(r"No module named '([^']+)'", error_message)
             if missing:
                 return f"在 requirements.txt 中添加 {missing.group(1)}"
@@ -449,26 +450,38 @@ class CodeAgentPlugin(Star):
     def _save_snapshot(self, session_id: str, step: str, code: str, files: List[Dict]):
         snapshot_dir = self.workspace / session_id / 'snapshots'
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_file = snapshot_dir / f"{step}_{int(time.time())}.json"
+        snapshot_time_ns = time.time_ns()
         snapshot_data = {
             'step': step,
-            'timestamp': time.time(),
+            'timestamp': snapshot_time_ns / 1_000_000_000,
             'code': code,
             'files': files
         }
-        with open(snapshot_file, 'w', encoding='utf-8') as f:
-            json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
-        return str(snapshot_file)
-    
+
+        sequence = 0
+        while True:
+            collision_suffix = '' if sequence == 0 else f'_{sequence:012d}'
+            snapshot_file = snapshot_dir / f"{step}_{snapshot_time_ns}{collision_suffix}.json"
+            try:
+                with open(snapshot_file, 'x', encoding='utf-8') as f:
+                    json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
+                return str(snapshot_file)
+            except FileExistsError:
+                sequence += 1
+
     def _rollback_to_snapshot(self, session_id: str, step: str) -> Optional[Dict[str, Any]]:
         snapshot_dir = self.workspace / session_id / 'snapshots'
         if not snapshot_dir.exists():
             return None
-        
-        snapshot_files = sorted(snapshot_dir.glob(f"{step}_*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+
+        snapshot_files = sorted(
+            snapshot_dir.glob(f"{step}_*.json"),
+            key=lambda snapshot_file: snapshot_file.name,
+            reverse=True
+        )
         if not snapshot_files:
             return None
-        
+
         try:
             with open(snapshot_files[0], 'r', encoding='utf-8') as f:
                 return json.load(f)

@@ -14,6 +14,7 @@ import ast
 import subprocess
 import re
 import tempfile
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Set
@@ -446,45 +447,55 @@ class ProjectPackager:
             'size': 0,
             'error': None
         }
-        
+
+        temp_dir = None
+        temporary_archive = None
         try:
             safe_project_name = self._safe_relative_path(name)
             if safe_project_name is None or '/' in safe_project_name:
                 raise ValueError('Project name must be a single safe path component')
             name = safe_project_name
 
-            safe_files = []
-            for item in files:
-                safe_name = self._safe_relative_path(item.get('name', 'file.txt'))
-                if safe_name is None:
-                    raise ValueError('Project file names must be safe relative paths')
-                safe_item = dict(item)
-                safe_item['name'] = safe_name
-                safe_files.append(safe_item)
-            files = safe_files
+            if not isinstance(files, (list, tuple)):
+                raise ValueError('Project files must be a list of objects')
+            if test_files is not None and not isinstance(test_files, (list, tuple)):
+                raise ValueError('Test files must be a list of objects')
+            if extra_files is not None and not isinstance(extra_files, (list, tuple)):
+                raise ValueError('Extra files must be a list of objects')
 
-            safe_test_files = []
-            for item in test_files or []:
-                safe_name = self._safe_relative_path(item.get('name', 'test_file.py'))
-                if safe_name is None:
-                    raise ValueError('Test file names must be safe relative paths')
-                safe_item = dict(item)
-                safe_item['name'] = safe_name
-                safe_test_files.append(safe_item)
-            test_files = safe_test_files
+            def normalize_entries(entries, label, default_name, allow_empty_name=False):
+                normalized = []
+                seen_names = set()
+                for index, item in enumerate(entries):
+                    if not isinstance(item, dict):
+                        raise ValueError(f'{label} entries must be objects (item {index})')
+                    raw_name = item.get('name', default_name)
+                    if allow_empty_name and not raw_name:
+                        continue
+                    safe_name = self._safe_relative_path(raw_name)
+                    if safe_name is None:
+                        raise ValueError(f'{label} names must be safe relative paths')
+                    if safe_name in seen_names:
+                        raise ValueError(f'{label} names must be unique: {safe_name}')
+                    content = item.get('content', '')
+                    if not isinstance(content, str):
+                        raise ValueError(f'{label} content must be text: {safe_name}')
+                    description = item.get('description', '')
+                    if not isinstance(description, str):
+                        raise ValueError(f'{label} descriptions must be text: {safe_name}')
+                    safe_item = dict(item)
+                    safe_item['name'] = safe_name
+                    safe_item['content'] = content
+                    safe_item['description'] = description
+                    normalized.append(safe_item)
+                    seen_names.add(safe_name)
+                return normalized
 
-            safe_extra_files = []
-            for item in extra_files or []:
-                extra_name = item.get('name', '')
-                if not extra_name:
-                    continue
-                safe_name = self._safe_relative_path(extra_name)
-                if safe_name is None:
-                    raise ValueError('Extra file names must be safe relative paths')
-                safe_item = dict(item)
-                safe_item['name'] = safe_name
-                safe_extra_files.append(safe_item)
-            extra_files = safe_extra_files
+            files = normalize_entries(files, 'Project file', 'file.txt')
+            test_files = normalize_entries(test_files or [], 'Test file', 'test_file.py')
+            extra_files = normalize_entries(
+                extra_files or [], 'Extra file', '', allow_empty_name=True
+            )
 
             project_files = []
             for item in files:
@@ -511,81 +522,120 @@ class ProjectPackager:
                 main_file,
                 project_type
             )
-            
+
+            planned_members = set()
+
+            def register_member(member):
+                for existing in planned_members:
+                    if (member == existing or member.startswith(existing + '/')
+                            or existing.startswith(member + '/')):
+                        raise ValueError(f'Archive paths conflict: {member} and {existing}')
+                planned_members.add(member)
+
+            generated_members = ['README.md']
+            if project.language == 'python':
+                generated_members.extend(['pyproject.toml', 'src/__init__.py', 'tests/__init__.py'])
+                if project.dependencies:
+                    generated_members.append('requirements.txt')
+            elif project.language in ['javascript', 'typescript']:
+                generated_members.append('package.json')
+            for member in generated_members:
+                register_member(member)
+            for file in project.files:
+                register_member(f'src/{file.name}')
+            for file in project.test_files:
+                register_member(f'tests/{file.name}')
+            for extra in extra_files:
+                register_member(extra['name'])
+
             temp_dir = Path(tempfile.mkdtemp(prefix="codeagent_pack_"))
-            
-            try:
-                project_dir = temp_dir / project.name
-                project_dir.mkdir(parents=True, exist_ok=True)
-                
-                src_dir = project_dir / "src"
-                src_dir.mkdir(parents=True, exist_ok=True)
-                
-                for file in project.files:
-                    file_path = src_dir / file.name
+            project_dir = temp_dir / project.name
+            project_dir.mkdir(parents=True, exist_ok=True)
+
+            src_dir = project_dir / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+
+            for file in project.files:
+                file_path = src_dir / file.name
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(file.content, encoding='utf-8')
+
+            if project.test_files:
+                tests_dir = project_dir / "tests"
+                tests_dir.mkdir(parents=True, exist_ok=True)
+                for file in project.test_files:
+                    file_path = tests_dir / file.name
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(file.content, encoding='utf-8')
-                
-                if project.test_files:
-                    tests_dir = project_dir / "tests"
-                    tests_dir.mkdir(parents=True, exist_ok=True)
-                    for file in project.test_files:
-                        file_path = tests_dir / file.name
-                        file_path.write_text(file.content, encoding='utf-8')
-                
-                readme_content = ReadmeGenerator.generate(project)
-                (project_dir / "README.md").write_text(readme_content, encoding='utf-8')
-                
-                if project.language == 'python':
-                    pyproject_content = DependencyGenerator.generate_pyproject_toml(project)
-                    (project_dir / "pyproject.toml").write_text(pyproject_content, encoding='utf-8')
-                    
-                    if project.dependencies:
-                        req_content = DependencyGenerator.generate_requirements(project.dependencies)
-                        (project_dir / "requirements.txt").write_text(req_content, encoding='utf-8')
-                    
-                    (project_dir / "src" / "__init__.py").write_text("", encoding='utf-8')
-                    (project_dir / "tests" / "__init__.py").write_text("", encoding='utf-8')
-                    
-                elif project.language in ['javascript', 'typescript']:
-                    pkg_content = DependencyGenerator.generate_package_json(project)
-                    (project_dir / "package.json").write_text(pkg_content, encoding='utf-8')
-                    self._install_node_dependencies(project_dir)
-                
-                if extra_files:
-                    for extra in extra_files:
-                        extra_name = extra.get('name', '')
-                        content = extra.get('content', '')
-                        if extra_name:
-                            extra_path = project_dir.joinpath(*extra_name.split('/'))
-                            extra_path.parent.mkdir(parents=True, exist_ok=True)
-                            extra_path.write_text(content, encoding='utf-8')
-                
-                self._cleanup_temp_files(project_dir)
-                
-                zip_name = f"{project.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-                zip_path = self.output_dir / zip_name
-                
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for root, _, zip_files in os.walk(project_dir):
-                        for file in zip_files:
-                            file_path = Path(root) / file
-                            arcname = file_path.relative_to(temp_dir)
-                            zf.write(file_path, arcname)
-                
-                size = zip_path.stat().st_size
-                
-                result['success'] = True
-                result['zip_path'] = str(zip_path)
-                result['file_count'] = len(project.files) + len(project.test_files) + 2
-                result['size'] = size
-                
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
+
+            readme_content = ReadmeGenerator.generate(project)
+            (project_dir / "README.md").write_text(readme_content, encoding='utf-8')
+
+            if project.language == 'python':
+                pyproject_content = DependencyGenerator.generate_pyproject_toml(project)
+                (project_dir / "pyproject.toml").write_text(pyproject_content, encoding='utf-8')
+
+                if project.dependencies:
+                    req_content = DependencyGenerator.generate_requirements(project.dependencies)
+                    (project_dir / "requirements.txt").write_text(req_content, encoding='utf-8')
+
+                (project_dir / "src" / "__init__.py").write_text("", encoding='utf-8')
+                (project_dir / "tests").mkdir(parents=True, exist_ok=True)
+                (project_dir / "tests" / "__init__.py").write_text("", encoding='utf-8')
+
+            elif project.language in ['javascript', 'typescript']:
+                pkg_content = DependencyGenerator.generate_package_json(project)
+                (project_dir / "package.json").write_text(pkg_content, encoding='utf-8')
+                self._install_node_dependencies(project_dir)
+
+            if extra_files:
+                for extra in extra_files:
+                    extra_path = project_dir.joinpath(*extra['name'].split('/'))
+                    extra_path.parent.mkdir(parents=True, exist_ok=True)
+                    extra_path.write_text(extra['content'], encoding='utf-8')
+
+            self._cleanup_temp_files(project_dir)
+
+            with tempfile.NamedTemporaryFile(
+                    prefix='.codeagent_archive_', suffix='.tmp', dir=self.output_dir,
+                    delete=False) as archive_file:
+                temporary_archive = Path(archive_file.name)
+
+            with zipfile.ZipFile(temporary_archive, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, _, zip_files in os.walk(project_dir):
+                    for file in zip_files:
+                        file_path = Path(root) / file
+                        arcname = file_path.relative_to(temp_dir)
+                        zf.write(file_path, arcname)
+
+            with zipfile.ZipFile(temporary_archive, 'r') as zf:
+                invalid_member = zf.testzip()
+                if invalid_member is not None:
+                    raise ValueError(f'Generated archive failed integrity check: {invalid_member}')
+                file_count = len(zf.namelist())
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            zip_name = f"{project.name}_{timestamp}_{uuid.uuid4().hex[:8]}.zip"
+            zip_path = self.output_dir / zip_name
+            os.replace(temporary_archive, zip_path)
+            temporary_archive = None
+
+            result['success'] = True
+            result['zip_path'] = str(zip_path)
+            result['file_count'] = file_count
+            result['size'] = zip_path.stat().st_size
+
         except Exception as e:
             result['error'] = str(e)
-        
+        finally:
+            if temp_dir is not None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            if temporary_archive is not None:
+                try:
+                    temporary_archive.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
         return result
 
 

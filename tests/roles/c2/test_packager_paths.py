@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -85,6 +86,54 @@ class ProjectPackagerPathTests(unittest.TestCase):
         for name in ("..", "folder/project", r"..\project", r"C:\escape", "/absolute"):
             with self.subTest(name=name):
                 self._assert_rejected(name=name, files=[])
+
+    def test_failed_archive_write_removes_temporary_and_published_output(self):
+        output_dir = self.test_root / "archives"
+        packager = ProjectPackager(str(output_dir))
+
+        with patch(
+            "codeagent_packager.zipfile.ZipFile.write",
+            side_effect=OSError("simulated archive write failure"),
+        ):
+            result = packager.pack(
+                files=[{"name": "main.py", "content": "print('hello')\n"}],
+                name="failed-project",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("simulated archive write failure", result["error"])
+        self.assertEqual(result["zip_path"], "")
+        self.assertEqual(list(output_dir.iterdir()), [])
+        self.assertEqual(list(self.test_root.glob("codeagent_pack_*")), [])
+
+    def test_rejects_non_text_content_before_creating_temporary_output(self):
+        output_dir = self.test_root / "archives"
+        result = ProjectPackager(str(output_dir)).pack(
+            files=[{"name": "main.py", "content": 42}],
+            name="invalid-project",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("content must be text", result["error"])
+        self.assertEqual(list(output_dir.iterdir()), [])
+        self.assertEqual(list(self.test_root.glob("codeagent_pack_*")), [])
+
+    def test_successful_archives_from_same_second_do_not_overwrite(self):
+        output_dir = self.test_root / "archives"
+        packager = ProjectPackager(str(output_dir))
+        files = [{"name": "main.py", "content": "print('hello')\n"}]
+
+        first = packager.pack(files=files, name="repeat-project")
+        second = packager.pack(files=files, name="repeat-project")
+
+        self.assertTrue(first["success"], first["error"])
+        self.assertTrue(second["success"], second["error"])
+        self.assertNotEqual(first["zip_path"], second["zip_path"])
+        self.assertEqual(len(list(output_dir.glob("*.zip"))), 2)
+        for result in (first, second):
+            with zipfile.ZipFile(result["zip_path"]) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertIn("repeat-project/src/main.py", archive.namelist())
 
 
 if __name__ == "__main__":

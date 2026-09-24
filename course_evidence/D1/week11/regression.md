@@ -15,9 +15,11 @@ Added D1 regression tests for a timed-out child that is killed successfully and 
 | `node --check tests\roles\d1\codeagent_js_checker.test.mjs` | PASS |
 | `node --test --test-isolation=none tests\roles\d1\codeagent_js_checker.test.mjs` | PASS, 13 tests |
 | `git diff --check` | PASS |
-| D1-scope scan for `_REPO`, `_COMMIT`, `_SOURCE_URL`, `_SOURCE_SHA`, `_SOURCE_PATH` and lowercase source tracking assignments | PASS, no matches |
+| D1-scope provenance and tracking-field scan | PASS, no disallowed fields found |
 
 As in Week 10, ordinary `TemporaryDirectory` use is blocked by this Windows sandbox's WinError 5 restrictions. The successful Python suite used a transient runner that mapped the fixture to a pre-created directory in the authorized D1 worktree; the runner and workspace are not included in the commit. The earlier restricted-path failures remain documented in the Week 9 summary and Week 10 evidence.
+
+The initial broad repository search surfaced report-oriented identifiers, test method names, a local filesystem-variable name, and evidence paths from other roles. These were classified as ordinary code or documentation text, not source provenance. A targeted assignment-shaped scan limited to D1 source, tests, and evidence returned no matches.
 
 ## Limitations
 

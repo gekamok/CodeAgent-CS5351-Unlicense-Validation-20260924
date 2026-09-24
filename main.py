@@ -510,7 +510,8 @@ class CodeAgentPlugin(Star):
                         'size': 0,
                         'error': 'Packager reported success but the archive is missing'
                     }
-            elif not result.get('error'):
+            elif (not isinstance(result.get('error'), str)
+                    or not result['error'].strip()):
                 if proc.returncode != 0:
                     detail = (proc.stderr or '').strip()
                     suffix = f": {detail[:500]}" if detail else ''

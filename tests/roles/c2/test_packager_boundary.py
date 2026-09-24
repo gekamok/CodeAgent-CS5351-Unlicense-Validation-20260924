@@ -114,6 +114,23 @@ class PackagerBoundaryTests(unittest.TestCase):
         self.assertEqual(result["zip_path"], "")
         self.assertEqual(list((self.temp_root / "codeagent_workspace" / "archive").glob("*.zip")), [])
 
+    def test_missing_script_and_subprocess_timeout_return_failures(self):
+        self.plugin.scripts_dir = self.temp_root / "missing-scripts"
+        with patch.object(PLUGIN_MODULE.subprocess, "run") as run:
+            missing = self.plugin._call_packager(files=[], name="sample")
+        run.assert_not_called()
+        self.assertFalse(missing["success"])
+        self.assertIn("not found", missing["error"])
+
+        timeout = PLUGIN_MODULE.subprocess.TimeoutExpired(
+            cmd=[sys.executable], timeout=120
+        )
+        self.plugin.scripts_dir = REPO_ROOT / "skills" / "CodeAgent" / "scripts"
+        with patch.object(PLUGIN_MODULE.subprocess, "run", side_effect=timeout):
+            result = self.plugin._call_packager(files=[], name="sample")
+        self.assertFalse(result["success"])
+        self.assertIn("timed out", result["error"].lower())
+
     def test_malformed_output_and_non_object_json_fail_closed(self):
         responses = (
             ("not-json", "traceback from child", "Packager returned invalid JSON"),
@@ -139,6 +156,10 @@ class PackagerBoundaryTests(unittest.TestCase):
             ({"success": True, "zip_path": "sample.zip", "file_count": "1", "size": 5}, 0,
              "invalid archive metadata"),
             ({"success": True, "file_count": 1, "size": 5}, 0, "without an archive path"),
+            ({"success": False, "zip_path": "", "file_count": 0, "size": 0}, 2,
+             "exited with code 2"),
+            ({"success": False, "error": 42}, 0,
+             "without an error message"),
         )
         for payload, returncode, message in payloads:
             with self.subTest(payload=payload, returncode=returncode):

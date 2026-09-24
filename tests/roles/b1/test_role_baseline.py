@@ -43,11 +43,11 @@ def load_plugin_type():
         "astrbot.api.event": event,
         "astrbot.api.star": star,
     }
-    source_path = REPOSITORY_ROOT / "main.py"
+    plugin_file = REPOSITORY_ROOT / "main.py"
     module_name = "_b1_main_under_test"
-    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    spec = importlib.util.spec_from_file_location(module_name, plugin_file)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load plugin source at {source_path}")
+        raise RuntimeError(f"Cannot load plugin source at {plugin_file}")
     module = importlib.util.module_from_spec(spec)
     with patch.dict(sys.modules, stubs):
         sys.modules[module_name] = module

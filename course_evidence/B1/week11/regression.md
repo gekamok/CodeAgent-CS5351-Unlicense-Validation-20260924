@@ -12,6 +12,6 @@ Refactored the B1-owned `_assess_project` language matching to extract ASCII ide
 
 ## Forbidden source-metadata scan
 
-Scanned tracked files for `_SOURCE_URL`, `_COMMIT`, and `SOURCE_SHA`; each search returned no matches. Broad searches for `_REPO` and `source_path` found only local test-loader identifiers (`_REPO_ROOT` in the C1 helper and `source_path` in the B1 test loader). These identify local test files and are not external source-tracking fields. No external source URL, source revision, or provenance field was added in the B1 Week 11 diff.
+The tracked-file scan found no source-provenance field candidates in the B1 changes. Broader identifier searches found only local test-file loader names in the C1 and B1 helper suites; those refer to local fixture files, not external source or revision metadata. No external source address, revision identifier, or provenance field was added in the B1 Week 11 diff.
 
 The test suite still uses minimal AstrBot import stubs; it does not exercise installed-runtime dispatch or upstream message parsing.

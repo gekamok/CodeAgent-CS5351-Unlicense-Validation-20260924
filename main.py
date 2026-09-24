@@ -224,6 +224,9 @@ class CodeAgentPlugin(Star):
         
         if not js_checker.exists():
             return
+
+        if not package_json.exists() or node_modules.exists():
+            return
         
         # 检查 Node.js 是否可用
         try:
@@ -239,33 +242,29 @@ class CodeAgentPlugin(Star):
         except subprocess.CalledProcessError as exc:
             self.logger.warning(f"Node.js version check failed; JS dependency setup skipped: {exc}")
             return
-        
-        if not package_json.exists():
-            return
-        
-        if not node_modules.exists():
-            self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
-            try:
-                proc = subprocess.run(
-                    ['npm', 'install', '--production=false'],
-                    cwd=str(self.scripts_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=180
+
+        self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
+        try:
+            proc = subprocess.run(
+                ['npm', 'install', '--production=false'],
+                cwd=str(self.scripts_dir),
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            if proc.returncode == 0:
+                self.logger.info("JS 依赖安装完成")
+            else:
+                details = (proc.stderr or proc.stdout or "").strip()
+                self.logger.warning(
+                    f"JS 依赖安装失败: {(details or f'exit code {proc.returncode}')[:200]}"
                 )
-                if proc.returncode == 0:
-                    self.logger.info("JS 依赖安装完成")
-                else:
-                    details = (proc.stderr or proc.stdout or "").strip()
-                    self.logger.warning(
-                        f"JS 依赖安装失败: {(details or f'exit code {proc.returncode}')[:200]}"
-                    )
-            except FileNotFoundError:
-                self.logger.warning("npm executable not found; JS dependencies are unavailable")
-            except subprocess.TimeoutExpired:
-                self.logger.warning("JS 依赖安装超时")
-            except OSError as exc:
-                self.logger.warning(f"npm could not be started: {exc}")
+        except FileNotFoundError:
+            self.logger.warning("npm executable not found; JS dependencies are unavailable")
+        except subprocess.TimeoutExpired:
+            self.logger.warning("JS 依赖安装超时")
+        except OSError as exc:
+            self.logger.warning(f"npm could not be started: {exc}")
     
     def _call_sandbox(self, code: str, session_id: str, language: str = 'python', filename: str = 'main.py') -> Dict[str, Any]:
         sandbox_script = self.scripts_dir / "codeagent_sandbox.py"

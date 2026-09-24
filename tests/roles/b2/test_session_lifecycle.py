@@ -71,6 +71,8 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertTrue(self.plugin._is_exit_command("@bot /EXITCONVER"))
         self.assertFalse(self.plugin._is_exit_command("/exitconversation"))
         self.assertFalse(self.plugin._is_exit_command("quoted: '/exitconver'"))
+        self.assertFalse(self.plugin._is_exit_command(None))
+        self.assertFalse(self.plugin._is_exit_command(7))
 
     def test_session_id_encoding_is_safe_and_collision_resistant(self):
         session_id = self.plugin._sanitize_session_id(r"..\outside", "user/1")
@@ -133,6 +135,28 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertTrue(session_dir.is_dir())
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 
+    def test_cleanup_rejects_resolved_alias_to_another_session(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+        other_session = self.workspace / "gother_u456"
+        other_session.mkdir()
+        sentinel = other_session / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with patch.object(Path, "resolve", side_effect=[self.workspace, other_session]):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+
+        self.assertTrue(session_dir.is_dir())
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+
+    def test_cleanup_fails_closed_on_path_resolution_loop(self):
+        with patch.object(
+            Path,
+            "resolve",
+            side_effect=[self.workspace, RuntimeError("symbolic-link resolution loop")],
+        ):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+
     def test_process_metadata_is_created_inside_workspace(self):
         data = self.plugin._create_process_json("g123_u456", "make a tool", "py", "S")
         process_file = self.workspace / "g123_u456" / "process.json"
@@ -148,6 +172,35 @@ class SessionLifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plugin._create_process_json("CON", "x", "py", "S")
         self.assertFalse((Path(self.temp_dir.name) / "outside").exists())
+
+    def test_process_metadata_rejects_stale_session_directory(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+        stale_file = session_dir / "old-process.json"
+        stale_file.write_text('{"status": "old"}', encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "stale state"):
+            self.plugin._create_process_json("g123_u456", "new run", "py", "S")
+
+        self.assertEqual(stale_file.read_text(encoding="utf-8"), '{"status": "old"}')
+        self.assertFalse((session_dir / "process.json").exists())
+
+    def test_process_metadata_rejects_non_string_fields(self):
+        with self.assertRaisesRegex(ValueError, "must be strings"):
+            self.plugin._create_process_json("g123_u456", None, "py", "S")
+        self.assertFalse((self.workspace / "g123_u456").exists())
+
+    def test_process_metadata_rejects_symlink_metadata_path(self):
+        with patch.object(
+            Path,
+            "is_symlink",
+            autospec=True,
+            side_effect=lambda path: path.name == "process.json",
+        ):
+            with self.assertRaisesRegex(ValueError, "process metadata"):
+                self.plugin._create_process_json("g123_u456", "x", "py", "S")
+
+        self.assertFalse((self.workspace / "g123_u456" / "process.json").exists())
 
     def test_process_metadata_rejects_symlink_and_resolved_escape(self):
         with patch.object(Path, "is_symlink", return_value=True):

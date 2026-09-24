@@ -106,7 +106,10 @@ class CodeAgentPlugin(Star):
 
             session_dir = candidate.resolve(strict=False)
             session_dir.relative_to(workspace_dir)
-            if session_dir == workspace_dir:
+            expected_session_dir = workspace_dir / session_id
+            # A junction can point at another child while still remaining
+            # inside the workspace; cleanup must only target its named child.
+            if session_dir != expected_session_dir or session_dir.parent != workspace_dir:
                 return False
 
             # Treat an already-removed session as an idempotent cleanup success.
@@ -119,7 +122,7 @@ class CodeAgentPlugin(Star):
             # completed cleanup from a stale directory that could not be removed.
             shutil.rmtree(session_dir)
             return not session_dir.exists()
-        except (OSError, ValueError):
+        except (OSError, RuntimeError, ValueError):
             return False
 
     

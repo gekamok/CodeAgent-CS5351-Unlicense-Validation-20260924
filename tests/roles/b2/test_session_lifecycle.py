@@ -135,6 +135,28 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertTrue(session_dir.is_dir())
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
 
+    def test_cleanup_rejects_resolved_alias_to_another_session(self):
+        session_dir = self.workspace / "g123_u456"
+        session_dir.mkdir()
+        other_session = self.workspace / "gother_u456"
+        other_session.mkdir()
+        sentinel = other_session / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+
+        with patch.object(Path, "resolve", side_effect=[self.workspace, other_session]):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+
+        self.assertTrue(session_dir.is_dir())
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+
+    def test_cleanup_fails_closed_on_path_resolution_loop(self):
+        with patch.object(
+            Path,
+            "resolve",
+            side_effect=[self.workspace, RuntimeError("symbolic-link resolution loop")],
+        ):
+            self.assertFalse(self.plugin._cleanup_session("g123_u456"))
+
     def test_process_metadata_is_created_inside_workspace(self):
         data = self.plugin._create_process_json("g123_u456", "make a tool", "py", "S")
         process_file = self.workspace / "g123_u456" / "process.json"

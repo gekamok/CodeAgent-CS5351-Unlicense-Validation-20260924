@@ -141,6 +141,34 @@ class ConfigContractTests(unittest.TestCase):
         self.assertEqual(reader._get_config("configured", 3), 17)
         self.assertEqual(reader._get_config("missing", 3), 3)
 
+    def test_get_config_falls_back_for_missing_or_malformed_values(self):
+        reader_type = compile_main_method("_get_config")
+        reader = reader_type()
+
+        self.assertEqual(reader._get_config("missing", 3), 3)
+        reader.config = None
+        self.assertEqual(reader._get_config("configured", 3), 3)
+        reader.config = {"configured": None}
+        self.assertEqual(reader._get_config("configured", 3), 3)
+        reader.config = {"configured": "three"}
+        self.assertEqual(reader._get_config("configured", 3), 3)
+
+        class BrokenConfig:
+            def get(self, key, default):
+                raise RuntimeError("config backend unavailable")
+
+        reader.config = BrokenConfig()
+        self.assertEqual(reader._get_config("configured", 3), 3)
+
+    def test_get_config_preserves_valid_falsey_values(self):
+        reader_type = compile_main_method("_get_config")
+        reader = reader_type()
+        reader.config = {"enabled": False, "limit": 0, "items": []}
+
+        self.assertIs(reader._get_config("enabled", True), False)
+        self.assertEqual(reader._get_config("limit", 5), 0)
+        self.assertEqual(reader._get_config("items", ["fallback"]), [])
+
     def test_js_dependency_preparation_installs_only_when_needed(self):
         method_type = compile_main_method("_ensure_js_dependencies")
         scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
@@ -156,7 +184,13 @@ class ConfigContractTests(unittest.TestCase):
             harness._ensure_js_dependencies()
 
         self.assertEqual(run.call_args_list, [
-            call(["node", "-v"], capture_output=True, check=True),
+            call(
+                ["node", "-v"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            ),
             call(
                 ["npm", "install", "--production=false"],
                 cwd=str(scripts_dir),
@@ -179,7 +213,112 @@ class ConfigContractTests(unittest.TestCase):
         with patch("subprocess.run", return_value=node_result) as run:
             harness._ensure_js_dependencies()
 
-        run.assert_called_once_with(["node", "-v"], capture_output=True, check=True)
+        run.assert_not_called()
+
+    def test_js_dependency_preparation_skips_missing_checker_or_manifest(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        for present in (
+            {"package.json"},
+            {"codeagent_js_checker.js"},
+        ):
+            with self.subTest(present=present):
+                harness = method_type()
+                harness.scripts_dir = FakeScriptPath(present)
+                harness.logger = Mock()
+                with patch("subprocess.run") as run:
+                    harness._ensure_js_dependencies()
+                run.assert_not_called()
+
+    def test_js_dependency_preparation_reports_node_timeout(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        harness = method_type()
+        harness.scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness.logger = Mock()
+        timeout = subprocess.TimeoutExpired(["node", "-v"], 5)
+
+        with patch("subprocess.run", side_effect=timeout) as run:
+            harness._ensure_js_dependencies()
+
+        run.assert_called_once()
+        self.assertIn("timed out", harness.logger.warning.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_node_nonzero_exit(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        harness = method_type()
+        harness.scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness.logger = Mock()
+        failure = subprocess.CalledProcessError(
+            2, ["node", "-v"], stderr="node failed"
+        )
+
+        with patch("subprocess.run", side_effect=failure) as run:
+            harness._ensure_js_dependencies()
+
+        run.assert_called_once()
+        self.assertIn("version check failed", harness.logger.warning.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_npm_failure_without_stderr(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        harness = method_type()
+        harness.scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness.logger = Mock()
+        node_result = subprocess.CompletedProcess(["node", "-v"], 0, stdout="v20", stderr="")
+        npm_result = subprocess.CompletedProcess(
+            ["npm", "install", "--production=false"], 3, stdout="", stderr=None
+        )
+
+        with patch("subprocess.run", side_effect=[node_result, npm_result]):
+            harness._ensure_js_dependencies()
+
+        self.assertIn("exit code 3", harness.logger.warning.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_npm_timeout(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        harness = method_type()
+        harness.scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness.logger = Mock()
+        node_result = subprocess.CompletedProcess(["node", "-v"], 0, stdout="v20", stderr="")
+        timeout = subprocess.TimeoutExpired(
+            ["npm", "install", "--production=false"], 180
+        )
+
+        with patch("subprocess.run", side_effect=[node_result, timeout]):
+            harness._ensure_js_dependencies()
+
+        self.assertIn("超时", harness.logger.warning.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_missing_node(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness = method_type()
+        harness.scripts_dir = scripts_dir
+        harness.logger = Mock()
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("node")) as run:
+            harness._ensure_js_dependencies()
+
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["node", "-v"])
+        harness.logger.warning.assert_called_once()
+        self.assertIn("Node.js executable not found", harness.logger.warning.call_args.args[0])
+
+    def test_js_dependency_preparation_reports_missing_npm(self):
+        method_type = compile_main_method("_ensure_js_dependencies")
+        scripts_dir = FakeScriptPath({"codeagent_js_checker.js", "package.json"})
+        harness = method_type()
+        harness.scripts_dir = scripts_dir
+        harness.logger = Mock()
+        node_result = subprocess.CompletedProcess(["node", "-v"], 0, stdout="v20", stderr="")
+
+        with patch(
+            "subprocess.run", side_effect=[node_result, FileNotFoundError("npm")]
+        ) as run:
+            harness._ensure_js_dependencies()
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0], ["npm", "install", "--production=false"])
+        harness.logger.warning.assert_called_once()
+        self.assertIn("npm executable not found", harness.logger.warning.call_args.args[0])
 
 
 if __name__ == "__main__":

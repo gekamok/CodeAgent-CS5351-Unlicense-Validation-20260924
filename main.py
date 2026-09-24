@@ -39,7 +39,22 @@ class CodeAgentPlugin(Star):
         self._ensure_js_dependencies()
     
     def _get_config(self, key: str, default=None):
-        return self.config.get(key, default)
+        """Read a typed setting, falling back when host config is missing or malformed."""
+        config = getattr(self, "config", None)
+        getter = getattr(config, "get", None)
+        if not callable(getter):
+            return default
+
+        try:
+            value = getter(key, default)
+        except Exception:
+            return default
+
+        if value is None:
+            return default
+        if default is not None and type(value) is not type(default):
+            return default
+        return value
     
     def _extract_requirement(self, text: str) -> Optional[str]:
         # Accept a slash command at a token boundary or the platform's
@@ -217,34 +232,47 @@ class CodeAgentPlugin(Star):
         
         if not js_checker.exists():
             return
+
+        if not package_json.exists() or node_modules.exists():
+            return
         
         # 检查 Node.js 是否可用
         try:
-            subprocess.run(['node', '-v'], capture_output=True, check=True)
-        except:
+            subprocess.run(
+                ['node', '-v'], capture_output=True, text=True, check=True, timeout=5
+            )
+        except FileNotFoundError:
+            self.logger.warning("Node.js executable not found; JS dependency setup skipped")
             return
-        
-        if not package_json.exists():
+        except subprocess.TimeoutExpired:
+            self.logger.warning("Node.js version check timed out; JS dependency setup skipped")
             return
-        
-        if not node_modules.exists():
-            self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
-            try:
-                proc = subprocess.run(
-                    ['npm', 'install', '--production=false'],
-                    cwd=str(self.scripts_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=180
+        except subprocess.CalledProcessError as exc:
+            self.logger.warning(f"Node.js version check failed; JS dependency setup skipped: {exc}")
+            return
+
+        self.logger.info("正在安装 JS 检查器依赖 (npm install)...")
+        try:
+            proc = subprocess.run(
+                ['npm', 'install', '--production=false'],
+                cwd=str(self.scripts_dir),
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            if proc.returncode == 0:
+                self.logger.info("JS 依赖安装完成")
+            else:
+                details = (proc.stderr or proc.stdout or "").strip()
+                self.logger.warning(
+                    f"JS 依赖安装失败: {(details or f'exit code {proc.returncode}')[:200]}"
                 )
-                if proc.returncode == 0:
-                    self.logger.info("JS 依赖安装完成")
-                else:
-                    self.logger.warning(f"JS 依赖安装失败: {proc.stderr[:200]}")
-            except subprocess.TimeoutExpired:
-                self.logger.warning("JS 依赖安装超时")
-            except Exception as e:
-                self.logger.warning(f"JS 依赖安装异常: {e}")
+        except FileNotFoundError:
+            self.logger.warning("npm executable not found; JS dependencies are unavailable")
+        except subprocess.TimeoutExpired:
+            self.logger.warning("JS 依赖安装超时")
+        except OSError as exc:
+            self.logger.warning(f"npm could not be started: {exc}")
     
     def _call_sandbox(self, code: str, session_id: str, language: str = 'python', filename: str = 'main.py') -> Dict[str, Any]:
         sandbox_script = self.scripts_dir / "codeagent_sandbox.py"

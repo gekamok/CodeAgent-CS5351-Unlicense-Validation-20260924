@@ -135,6 +135,44 @@ class DebugAndSnapshotRegressionTests(unittest.TestCase):
         rollback_call.assert_called_once_with("gprivate_uuser", "debug_recovery")
         self.assertTrue(any("核心代码测试通过" in message for message in messages))
 
+    def test_debug_loop_stops_when_checkpoint_cannot_be_restored(self):
+        class FakeEvent:
+            message_str = "/agent tiny request"
+
+            def get_sender_id(self):
+                return "user"
+
+            def get_group_id(self):
+                return "private"
+
+            def plain_result(self, message):
+                return message
+
+        self.plugin.config = {"max_debug_rounds": 2, "quality_threshold": 75}
+        self.plugin.active_sessions = {}
+
+        async def collect_messages():
+            return [message async for message in self.plugin.agent_command(FakeEvent())]
+
+        with (
+            patch.object(self.plugin, "_is_in_blacklist", return_value=False),
+            patch.object(self.plugin, "_is_exit_command", return_value=False),
+            patch.object(self.plugin, "_extract_requirement", return_value="tiny request"),
+            patch.object(self.plugin, "_sanitize_session_id", return_value="gprivate_uuser"),
+            patch.object(self.plugin, "_cleanup_session"),
+            patch.object(self.plugin, "_rollback_to_snapshot", return_value=None) as rollback_call,
+            patch.object(
+                self.plugin,
+                "_call_sandbox",
+                return_value={"success": False, "stderr": "ValueError: retry failed"},
+            ) as sandbox_call,
+        ):
+            messages = asyncio.run(collect_messages())
+
+        self.assertEqual(sandbox_call.call_count, 1)
+        rollback_call.assert_called_once_with("gprivate_uuser", "debug_recovery")
+        self.assertTrue(any("无法恢复 Debug 检查点" in message for message in messages))
+
     def test_same_tick_snapshots_are_unique_and_latest_can_be_restored(self):
         tick = 1_750_000_000_123_456_789
         with patch.object(_MAIN.time, "time", return_value=1_750_000_000.0), patch.object(

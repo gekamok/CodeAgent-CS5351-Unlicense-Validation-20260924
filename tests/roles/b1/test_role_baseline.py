@@ -92,6 +92,15 @@ class B1RequirementBaselineTests(unittest.TestCase):
         self.assertIsNone(plugin._extract_requirement("Please build a parser"))
         self.assertIsNone(plugin._extract_requirement("/agent   "))
 
+    def test_extract_requirement_ignores_command_like_path_fragments(self):
+        plugin = self.make_plugin()
+        self.assertIsNone(
+            plugin._extract_requirement("prefix/agent build a parser")
+        )
+        self.assertIsNone(
+            plugin._extract_requirement("mail@builder/agent build a parser")
+        )
+
     def test_blacklist_checks_admin_and_group_ids_after_string_normalization(self):
         plugin = self.make_plugin(
             {"admin_blacklist": [42], "group_blacklist": ["blocked-room"]}
@@ -125,6 +134,14 @@ class B1RequirementBaselineTests(unittest.TestCase):
                 self.assertEqual(
                     plugin._assess_project("x" * length)["size"], expected
                 )
+
+    def test_project_assessment_ignores_outer_whitespace(self):
+        plugin = self.make_plugin()
+        padded_short_requirement = "\n  " + "x" * 29 + "\t\n"
+        self.assertEqual(plugin._assess_project(padded_short_requirement)["size"], "S")
+        self.assertEqual(
+            plugin._assess_project("\n  JavaScript parser \t")["type"], "js"
+        )
 
 
 if __name__ == "__main__":

@@ -132,6 +132,11 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertIn("请提供具体的需求描述", replies[0])
         self.assertEqual(self.plugin.active_sessions, {})
 
+    def test_unrelated_message_is_not_dispatched(self):
+        replies = self.collect(self.plugin.agent_command(FakeEvent("hello")))
+        self.assertEqual(replies, [])
+        self.assertEqual(self.plugin.active_sessions, {})
+
     def test_blacklisted_user_is_ignored(self):
         self.plugin.config = {"admin_blacklist": ["user"]}
         replies = self.collect(
@@ -170,6 +175,55 @@ class A2OrchestrationTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_error_response_stream_close_cleans_failed_session(self):
+        async def exercise():
+            def fail_assessment(_requirement):
+                session_id = next(iter(self.plugin.active_sessions))
+                session_dir = self.plugin.workspace / session_id
+                session_dir.mkdir()
+                (session_dir / "partial.txt").write_text(
+                    "partial work", encoding="utf-8"
+                )
+                raise RuntimeError("assessment unavailable")
+
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            with patch.object(
+                self.plugin, "_assess_project", side_effect=fail_assessment
+            ):
+                error_reply = await anext(stream)
+            self.assertIn("执行出错: assessment unavailable", error_reply)
+
+            session_id = self.plugin._sanitize_session_id("group", "user")
+            session_dir = self.plugin.workspace / session_id
+            self.assertTrue(session_dir.exists())
+            await stream.aclose()
+
+            self.assertEqual(self.plugin.active_sessions, {})
+            self.assertFalse(session_dir.exists())
+
+        asyncio.run(exercise())
+
+    def test_stale_stream_does_not_remove_replacement_session(self):
+        async def exercise():
+            stream = self.plugin.agent_command(
+                FakeEvent("/agent build a calculator")
+            )
+            self.assertIn("正在分析需求", await anext(stream))
+            session_id = self.plugin._sanitize_session_id("group", "user")
+            original_state = self.plugin.active_sessions[session_id]
+            replacement_state = {"active": True, "requirement": "new request"}
+            self.plugin.active_sessions[session_id] = replacement_state
+
+            await stream.aclose()
+
+            self.assertFalse(original_state["active"])
+            self.assertIs(self.plugin.active_sessions[session_id], replacement_state)
+
+        asyncio.run(exercise())
+
     def test_exit_command_removes_active_session_and_workspace(self):
         session_id = self.plugin._sanitize_session_id("group", "user")
         session_dir = self.plugin.workspace / session_id
@@ -200,6 +254,36 @@ class A2OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.plugin.active_sessions, {})
         for session_id in session_ids:
             self.assertFalse((self.plugin.workspace / session_id).exists())
+
+    def test_terminate_continues_after_cleanup_error(self):
+        session_ids = (
+            self.plugin._sanitize_session_id("first", "user"),
+            self.plugin._sanitize_session_id("second", "user"),
+        )
+        session_records = {}
+        for session_id in session_ids:
+            (self.plugin.workspace / session_id).mkdir()
+            record = {"active": True}
+            session_records[session_id] = record
+            self.plugin.active_sessions[session_id] = record
+
+        attempted = []
+        cleanup = self.plugin._cleanup_session
+
+        def fail_first_cleanup(session_id):
+            attempted.append(session_id)
+            if session_id == session_ids[0]:
+                raise OSError("injected cleanup failure")
+            cleanup(session_id)
+
+        with patch.object(self.plugin, "_cleanup_session", side_effect=fail_first_cleanup):
+            asyncio.run(self.plugin.terminate())
+
+        self.assertEqual(attempted, list(session_ids))
+        self.assertTrue(all(not state["active"] for state in session_records.values()))
+        self.assertEqual(self.plugin.active_sessions, {})
+        self.assertTrue((self.plugin.workspace / session_ids[0]).exists())
+        self.assertFalse((self.plugin.workspace / session_ids[1]).exists())
 
 
 if __name__ == "__main__":

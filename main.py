@@ -765,9 +765,9 @@ def test_main():
             # Async response streams can be closed while suspended at a yield.
             # Release only the record created by this invocation so a stale
             # generator cannot remove a newer session for the same user.
+            session_state['active'] = False
             current_session = self.active_sessions.get(session_id)
             if current_session is session_state or current_session is None:
-                session_state['active'] = False
                 try:
                     self._cleanup_session(session_id)
                 except Exception as cleanup_error:
@@ -777,9 +777,19 @@ def test_main():
                         self.active_sessions.pop(session_id, None)
 
     async def terminate(self):
-        for session_id in list(self.active_sessions.keys()):
-            self.active_sessions[session_id]['active'] = False
-            self._cleanup_session(session_id)
+        sessions = list(self.active_sessions.items())
+        for _session_id, session in sessions:
+            if isinstance(session, dict):
+                session['active'] = False
+
+        for session_id, _session in sessions:
+            try:
+                self._cleanup_session(session_id)
+            except Exception as cleanup_error:
+                self.logger.error(
+                    f"CodeAgent shutdown cleanup error for {session_id}: {cleanup_error}"
+                )
+
         self.active_sessions.clear()
         self.logger.info("CodeAgent 插件已卸载")
 

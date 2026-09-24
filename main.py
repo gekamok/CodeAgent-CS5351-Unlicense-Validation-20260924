@@ -7,6 +7,7 @@ CodeAgent
 import os
 import json
 import re
+import sys
 import time
 import shutil
 import subprocess
@@ -276,13 +277,23 @@ class CodeAgentPlugin(Star):
     
     def _call_security_scan(self, code: str, language: str = 'python') -> Dict[str, Any]:
         security_script = self.scripts_dir / "codeagent_security.py"
+
+        def unavailable(message: str) -> Dict[str, Any]:
+            return {
+                'passed': False,
+                'risk_level': 'high',
+                'quality_score': 0,
+                'summary': f'Security scan unavailable: {message}',
+                'error': message,
+            }
+
         if not security_script.exists():
-            return {'passed': True, 'error': 'Security script not found'}
+            return unavailable('Security script not found')
         
         try:
             proc = subprocess.run(
                 [
-                    'python3', str(security_script),
+                    sys.executable, str(security_script),
                     '--code', json.dumps(code),
                     '--language', language
                 ],
@@ -290,9 +301,24 @@ class CodeAgentPlugin(Star):
                 text=True,
                 timeout=60
             )
-            return json.loads(proc.stdout)
-        except Exception:
-            return {'passed': True}
+            report = json.loads(proc.stdout)
+            if not isinstance(report, dict):
+                return unavailable('Security scanner returned a non-object result')
+            if report.get('risk_level') not in {'safe', 'low', 'medium', 'high', 'critical'}:
+                return unavailable('Security scanner returned an invalid risk level')
+            if proc.returncode not in (0, 1):
+                return unavailable(proc.stderr.strip() or f'Security scanner exited with code {proc.returncode}')
+            if (
+                proc.returncode == 1
+                and report.get('passed', True)
+                and report.get('risk_level') not in {'high', 'critical'}
+            ):
+                return unavailable('Security scanner exited unsuccessfully with an inconsistent report')
+            return report
+        except subprocess.TimeoutExpired:
+            return unavailable('Security scanner timed out')
+        except Exception as exc:
+            return unavailable(str(exc))
     
     def _call_js_checker(self, code: str, language: str = 'javascript') -> Dict[str, Any]:
         """调用 JavaScript/TypeScript 检查器"""

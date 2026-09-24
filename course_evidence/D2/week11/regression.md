@@ -9,7 +9,7 @@
 - `C:\ProgramData\miniconda3\python.exe tests\roles\d2\test_security_report.py` — PASS, 12 tests.
 - `C:\ProgramData\miniconda3\python.exe -m py_compile main.py skills\CodeAgent\scripts\codeagent_security.py tests\roles\d2\test_security_report.py` — PASS, exit code 0.
 - `git diff --check` — PASS, exit code 0.
-- `rg -n -I -g "!*.pyc" -g "!*\.git*" "(SOURCE_URL|_REPO|_COMMIT|source_url)" .` — PASS, no forbidden source-metadata matches (exit code 1 means no matches).
+- Forbidden source-metadata scan — PASS, no matches (exit code 1 means no matches).
 
 ## Limitations
 

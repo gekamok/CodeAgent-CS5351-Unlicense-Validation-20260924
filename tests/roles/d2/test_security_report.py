@@ -71,6 +71,16 @@ class SecurityReportSerializationTests(unittest.TestCase):
         self.assertTrue(any("rule completeness" in note for note in encoded["limitations"]))
         self.assertTrue(any("coverage is incomplete" in note for note in encoded["limitations"]))
 
+    def test_shell_report_discloses_missing_builtin_rules_and_shellcheck(self):
+        scanner = CodeSecurityScanner()
+        scanner.shellcheck_checker.check = lambda *_args, **_kwargs: {"error": "not installed"}
+
+        encoded = json.loads(scanner.scan_shell("#!/bin/sh\necho safe").to_json())
+
+        self.assertEqual(encoded["scanner_status"]["pattern_checker"], "unavailable")
+        self.assertEqual(encoded["scanner_status"]["shellcheck"], "unavailable")
+        self.assertTrue(any("No built-in Shell security checks" in note for note in encoded["limitations"]))
+
 
 class SecurityScanBoundaryTests(unittest.TestCase):
     @classmethod

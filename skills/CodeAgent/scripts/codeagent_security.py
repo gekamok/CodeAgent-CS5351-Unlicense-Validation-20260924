@@ -760,9 +760,9 @@ class CodeSecurityScanner:
     def scan_shell(self, code: str, file_path: str = "") -> SecurityReport:
         """扫描 Shell 代码"""
         report = SecurityReport(file_path=file_path)
-        report.scanner_status["pattern_checker"] = "available"
+        report.scanner_status["pattern_checker"] = "unavailable"
         report.limitations.append(
-            "Built-in pattern checks are heuristic and do not establish rule completeness."
+            "No built-in Shell security checks are implemented; scanning relies on optional ShellCheck."
         )
         
         # ShellCheck 检查
